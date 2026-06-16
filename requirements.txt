@@ -6,4 +6,5 @@ requests
 pandas
 numpy
 scikit-learn
-scipy
+scipygspread
+google-auth

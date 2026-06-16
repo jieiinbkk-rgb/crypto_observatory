@@ -316,7 +316,7 @@ def classify_state(store: dict, df: pd.DataFrame) -> tuple:
 
     if gmm is not None and scaler is not None:
         row_feat = latest[FEATURE_COLS].values
-        if not np.isnan(row_feat).any():
+        if not pd.isna(row_feat).any():
             x = scaler.transform([row_feat])
             probs = gmm.predict_proba(x)[0]
             cluster = int(np.argmax(probs))

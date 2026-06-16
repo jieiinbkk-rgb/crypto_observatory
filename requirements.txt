@@ -1,10 +1,9 @@
 streamlit
 requests
 pandas
-streamlit
-requests
-pandas
 numpy
+scipy
 scikit-learn
-scipygspread
+gspread
 google-auth
+google-auth-oauthlib

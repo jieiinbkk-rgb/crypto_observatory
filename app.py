@@ -268,25 +268,41 @@ def fit_or_update_gmm(store, df):
 def classify_state(store, df):
     if len(df) < 5:
         return "unknown", 0.0, "insufficient_data"
+
     latest = df.iloc[-1]
     gmm    = store.get("gmm_model")
     scaler = store.get("gmm_scaler")
     lmap   = store.get("gmm_label_map", {})
+
     if gmm and scaler:
-        row_feat = latest[FEATURE_COLS].values
+        row_feat = pd.to_numeric(
+            latest[FEATURE_COLS],
+            errors="coerce"
+        ).astype(float).values
+
         if not np.isnan(row_feat).any():
             x = scaler.transform([row_feat])
-            probs   = gmm.predict_proba(x)[0]
+            probs = gmm.predict_proba(x)[0]
             cluster = int(np.argmax(probs))
             return lmap.get(cluster, "unknown"), float(probs[cluster]), "GMM"
+
     btc_z  = latest.get("BTC_Z") or 0
     eth_z  = latest.get("ETH_Z") or 0
     rz     = latest.get("Ratio_Z") or 0
     btc_rv = latest.get("BTC_RV10") or 0
-    if btc_z > ZSCORE_THRESHOLD and eth_z > ZSCORE_THRESHOLD: return "panic",   0.85, "Rule"
-    if btc_z < -1.5 and eth_z < -1.5 and btc_rv < 2:         return "squeeze", 0.80, "Rule"
-    if rz > ZSCORE_THRESHOLD:                                  return "hedging", 0.75, "Rule"
-    if btc_z < 0 and eth_z < 0:                               return "risk_on", 0.70, "Rule"
+
+    if btc_z > ZSCORE_THRESHOLD and eth_z > ZSCORE_THRESHOLD:
+        return "panic", 0.85, "Rule"
+
+    if btc_z < -1.5 and eth_z < -1.5 and btc_rv < 2:
+        return "squeeze", 0.80, "Rule"
+
+    if rz > ZSCORE_THRESHOLD:
+        return "hedging", 0.75, "Rule"
+
+    if btc_z < 0 and eth_z < 0:
+        return "risk_on", 0.70, "Rule"
+
     return "unknown", 0.50, "Rule"
 
 def get_state_history_df(store):

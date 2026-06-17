@@ -152,8 +152,13 @@ df = compute_features(raw.copy())
 dq_store["total_rows"]    = len(df)
 dq_store["missing_count"] = int(df[["BTC_IV","ETH_IV"]].isna().sum().sum())
 
-# GMM fit + classify
-fit_gmm(clf_store, df.tail(gmm_window))
+# GMM fit + classify（30分に1回だけ再学習）
+import datetime as _dt
+_now = _dt.datetime.utcnow()
+_last = clf_store.get("last_fit")
+if _last is None or (_now - _last).seconds >= 1800:
+    fit_gmm(clf_store, df.tail(gmm_window))
+    clf_store["last_fit"] = _now
 state_key, confidence, method = classify_state(clf_store, df)
 record_state(clf_store, state_key, confidence, method)
 

@@ -231,7 +231,11 @@ def launch_collector():
                             _ws_container["ws"] = ws_iv
                         except Exception:
                             pass
-                    sheet_append(_ws_container["ws"], row)
+                    # Google Sheetsは10分に1回だけ書き込む
+                    import datetime as _dt
+                    if not hasattr(_bot, "_last_sheet_write") or (_dt.datetime.now() - _bot._last_sheet_write).seconds >= 600:
+                        sheet_append(_ws_container["ws"], row)
+                        _bot._last_sheet_write = _dt.datetime.now()
 
             except Exception:
                 dq["api_failures"] += 1
@@ -256,15 +260,24 @@ def get_funding_rate(dq: dict) -> float | None:
     return None
 
 
+_fg_cache = {"value": None, "date": None}
+
 def get_fear_greed() -> int | None:
+    from datetime import date
+    today = str(date.today())
+    if _fg_cache["date"] == today and _fg_cache["value"] is not None:
+        return _fg_cache["value"]
     """Alternative.me Fear & Greed Index取得"""
     try:
         r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=5)
         if r.status_code == 200:
-            return int(r.json()["data"][0]["value"])
+            val = int(r.json()["data"][0]["value"])
+            _fg_cache["value"] = val
+            _fg_cache["date"]  = today
+            return val
     except Exception:
         pass
-    return None
+    return _fg_cache["value"]
 
 
 def get_atm_greeks(symbol: str, dq: dict) -> dict:

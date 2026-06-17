@@ -287,6 +287,25 @@ with tab_iv:
         st.markdown("#### Realized Vol Proxy (10-period)")
         st.line_chart(rv_data, height=180)
 
+    # Fear & Greed / Funding Rate
+    c5, c6 = st.columns(2)
+    with c5:
+        fg_data = chart_idx[["Fear_Greed"]].dropna() if "Fear_Greed" in chart_idx.columns else pd.DataFrame()
+        if not fg_data.empty:
+            st.markdown("#### Fear & Greed Index")
+            latest_fg = int(fg_data.iloc[-1]["Fear_Greed"])
+            fg_label = "Extreme Greed 🤑" if latest_fg >= 75 else ("Greed 😊" if latest_fg >= 55 else ("Neutral 😐" if latest_fg >= 45 else ("Fear 😨" if latest_fg >= 25 else "Extreme Fear 😱")))
+            st.metric("現在値", f"{latest_fg}", delta=fg_label)
+            st.line_chart(fg_data, color="#ffd700", height=160)
+    with c6:
+        fr_data = chart_idx[["Funding_Rate"]].dropna() if "Funding_Rate" in chart_idx.columns else pd.DataFrame()
+        if not fr_data.empty:
+            st.markdown("#### Funding Rate")
+            latest_fr = float(fr_data.iloc[-1]["Funding_Rate"])
+            fr_label = "強気 🟢" if latest_fr > 0 else "弱気 🔴"
+            st.metric("現在値", f"{latest_fr:.6f}", delta=fr_label)
+            st.line_chart(fr_data, color="#00c896" if latest_fr >= 0 else "#ff4b4b", height=160)
+
 # ────────────────────────────────────────────────────────────
 # TAB 2: Anomaly
 # ────────────────────────────────────────────────────────────

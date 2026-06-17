@@ -11,7 +11,7 @@ from threading import Thread, Lock
 import streamlit as st
 
 CSV_FILE  = "iv_data.csv"
-_CSV_COLS = ["Timestamp","BTC_IV","ETH_IV","BTC_ETH_Ratio","BTC_Spot","ETH_Spot","Funding_Rate","Fear_Greed"]
+_CSV_COLS = ["Timestamp","BTC_IV","ETH_IV","BTC_ETH_Ratio","BTC_Spot","ETH_Spot","Funding_Rate","Fear_Greed","BTC_Delta","BTC_Gamma","BTC_Theta","BTC_Vega"]
 _lock     = Lock()
 
 SCOPES            = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
@@ -205,8 +205,9 @@ def launch_collector():
                 btc_sp = _get_spot("btc",  dq); time.sleep(0.5)
                 eth_sp = _get_spot("eth",  dq)
 
-                funding = get_funding_rate(dq)
+                funding    = get_funding_rate(dq)
                 fear_greed = get_fear_greed()
+                btc_greeks = get_atm_greeks('BTC', dq)
 
                 if btc_iv and eth_iv:
                     ts    = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -214,7 +215,7 @@ def launch_collector():
                     bsp   = round(btc_sp, 2) if btc_sp else ""
                     esp   = round(eth_sp, 2) if eth_sp else ""
 
-                    row = [ts, round(btc_iv,4), round(eth_iv,4), ratio, bsp, esp, round(funding,6) if funding else "", fear_greed if fear_greed else ""]
+                    row = [ts, round(btc_iv,4), round(eth_iv,4), ratio, bsp, esp, round(funding,6) if funding else "", fear_greed if fear_greed else "", round(btc_greeks.get("delta",0),4), round(btc_greeks.get("gamma",0),6), round(btc_greeks.get("theta",0),4), round(btc_greeks.get("vega",0),4)]
 
                     with _lock:
                         pd.DataFrame([row], columns=_CSV_COLS).to_csv(
@@ -262,3 +263,67 @@ def get_fear_greed() -> int | None:
     except Exception:
         pass
     return None
+
+
+def get_atm_greeks(symbol: str, dq: dict) -> dict:
+    """ATMオプションのGreeks取得"""
+    url = f"https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency={symbol}&kind=option"
+    dq["api_calls"] += 1
+    try:
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+        if r.status_code != 200:
+            dq["api_failures"] += 1
+            return {}
+
+        results = r.json().get("result", [])
+        if not results:
+            return {}
+
+        # 直近限月のATMオプションを探す
+        spot = None
+        for item in results:
+            if item.get("underlying_price"):
+                spot = float(item["underlying_price"])
+                break
+
+        if not spot:
+            return {}
+
+        # ATMに最も近いCallオプションを選択
+        atm_options = [
+            x for x in results
+            if "-C" in x.get("instrument_name", "")
+            and x.get("mark_iv")
+            and x.get("open_interest", 0) > 0
+        ]
+
+        if not atm_options:
+            return {}
+
+        # 行使価格を抽出してATMに最も近いものを選択
+        def get_strike(name):
+            try:
+                return float(name.split("-")[2])
+            except Exception:
+                return 999999
+
+        atm = min(atm_options, key=lambda x: abs(get_strike(x["instrument_name"]) - spot))
+
+        # 個別オプションのGreeksを取得
+        inst = atm["instrument_name"]
+        url2 = f"https://www.deribit.com/api/v2/public/get_order_book?instrument_name={inst}&depth=1"
+        r2   = requests.get(url2, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        if r2.status_code == 200:
+            greeks = r2.json().get("result", {}).get("greeks", {})
+            return {
+                "delta": greeks.get("delta", 0),
+                "gamma": greeks.get("gamma", 0),
+                "theta": greeks.get("theta", 0),
+                "vega":  greeks.get("vega",  0),
+                "iv":    atm.get("mark_iv", 0),
+                "instrument": inst,
+            }
+    except Exception:
+        pass
+    dq["api_failures"] += 1
+    return {}

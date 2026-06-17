@@ -537,6 +537,28 @@ with tab_strat:
             f'<div style="font-size:.78rem;color:#888;margin-top:.3rem">{sv["rationale"]}</div>'
             f'</div>', unsafe_allow_html=True)
 
+    # IVスキュー分析
+    st.markdown("#### 📐 IVスキュー分析")
+    try:
+        from strategy.skew import get_skew_data
+        skew_data = get_skew_data("BTC")
+        if skew_data:
+            sk = st.columns(5)
+            sk[0].metric("ATM IV",        f"{skew_data['atm_iv']:.1f}")
+            sk[1].metric("OTM Call IV",   f"{skew_data['otm_call_iv']:.1f}")
+            sk[2].metric("OTM Put IV",    f"{skew_data['otm_put_iv']:.1f}")
+            rr = skew_data['risk_reversal']
+            sk[3].metric("Risk Reversal", f"{rr:+.2f}",
+                        delta="上昇期待 🟢" if rr > 0 else "下落警戒 🔴")
+            bf = skew_data['butterfly']
+            sk[4].metric("Butterfly",     f"{bf:+.2f}",
+                        delta="テール需要高 ⚠️" if bf > 2 else "通常")
+            st.caption(f"限月: {skew_data.get('expiry','?')} · Spot: ${skew_data.get('spot',0):,.0f}")
+        else:
+            st.info("スキューデータ取得中...")
+    except Exception as e:
+        st.warning(f"スキュー取得エラー: {e}")
+
     if not signal_history_df.empty:
         st.markdown("#### 📋 シグナル履歴")
         st.dataframe(signal_history_df.tail(50)[::-1], use_container_width=True, height=260)

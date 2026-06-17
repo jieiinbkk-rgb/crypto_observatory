@@ -172,7 +172,12 @@ state_info   = MARKET_STATES[state_key]
 # Signal generation
 signal = generate_signal(state_key, confidence, df, port_store["positions"], opp_score, clf_store)
 if auto_trade and signal:
-    open_trade(signal, port_store)
+    from paper_trade.engine import check_risk_limits
+    risk_ok, risk_msg = check_risk_limits(port_store)
+    if risk_ok:
+        open_trade(signal, port_store)
+    else:
+        pass  # リスク上限超過のためスキップ
     sheet_append(ws_sig, [
         signal["timestamp"], signal["state"], round(signal["confidence"],4),
         signal["id"], signal["strategy"], round(signal["btc_iv"],4),

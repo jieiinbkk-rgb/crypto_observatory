@@ -28,6 +28,19 @@ THETA_DECAY = {
 def get_portfolio_store():
     return {"positions":[],"closed_trades":[],"capital":INITIAL_CAPITAL,"peak_capital":INITIAL_CAPITAL,"max_drawdown":0.0}
 
+MAX_DRAWDOWN_LIMIT = 10.0  # 最大DD10%を超えたら新規停止
+MAX_DAILY_LOSS     = 5.0   # 1日5%損失で停止
+
+def check_risk_limits(store):
+    """リスク上限チェック。Trueなら新規ポジション可"""
+    dd = store.get("max_drawdown", 0)
+    if dd >= MAX_DRAWDOWN_LIMIT:
+        return False, f"Max DD {dd:.1f}% 超過"
+    cap = store["capital"]
+    if cap < store["peak_capital"] * (1 - MAX_DAILY_LOSS / 100):
+        return False, f"日次損失上限超過"
+    return True, "OK"
+
 def open_trade(signal, store):
     size_usd=store["capital"]*POSITION_SIZE; cost=size_usd*COMMISSION_RATE
     pos={**signal,"entry_time":signal["timestamp"],"size_usd":round(size_usd,2),"cost_usd":round(cost,2),

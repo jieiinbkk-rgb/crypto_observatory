@@ -653,6 +653,27 @@ with tab_res:
     if not rc_df.empty:
         st.line_chart(rc_df, height=200)
 
+    # 4資産IV比較
+    st.divider()
+    st.markdown("#### 4資産 IV 比較")
+    multi_iv_cols = [c for c in ["BTC_IV","ETH_IV","SOL_IV","BNB_IV"] if c in chart_idx.columns]
+    multi_iv_data = chart_idx[multi_iv_cols].dropna()
+    if not multi_iv_data.empty:
+        st.line_chart(multi_iv_data, height=220)
+
+    # 相関マトリクス（4資産）
+    corr_cols2 = [c for c in ["BTC_IV","ETH_IV","SOL_IV","BNB_IV"] if c in df.columns]
+    if len(corr_cols2) >= 2:
+        st.markdown("#### 4資産 IV 相関")
+        corr2 = df[corr_cols2].dropna().corr().round(3)
+        def _color2(v):
+            if v >= 0.7:  return "background-color:#00c89644"
+            if v >= 0.3:  return "background-color:#00c89622"
+            if v <= -0.7: return "background-color:#ff4b4b44"
+            if v <= -0.3: return "background-color:#ff4b4b22"
+            return ""
+        st.dataframe(corr2.style.map(_color2), use_container_width=True)
+
     st.markdown("#### IVパーセンタイル分析")
     qs = [0.05,0.10,0.25,0.50,0.75,0.90,0.95]
     q_rows = [{"Pct":f"{int(q*100)}th",

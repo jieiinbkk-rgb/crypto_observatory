@@ -11,7 +11,7 @@ from threading import Thread, Lock
 import streamlit as st
 
 CSV_FILE  = "iv_data.csv"
-_CSV_COLS = ["Timestamp","BTC_IV","ETH_IV","BTC_ETH_Ratio","BTC_Spot","ETH_Spot","Funding_Rate","Fear_Greed","BTC_Delta","BTC_Gamma","BTC_Theta","BTC_Vega"]
+_CSV_COLS = ["Timestamp","BTC_IV","ETH_IV","BTC_ETH_Ratio","BTC_Spot","ETH_Spot","Funding_Rate","Fear_Greed","BTC_Delta","BTC_Gamma","BTC_Theta","BTC_Vega","SOL_IV","BNB_IV"]
 _lock     = Lock()
 
 SCOPES            = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
@@ -210,6 +210,8 @@ def launch_collector():
                 funding    = get_funding_rate(dq)
                 fear_greed = get_fear_greed()
                 btc_greeks = get_atm_greeks('BTC', dq)
+                sol_iv     = _get_dvol('sol', dq)
+                bnb_iv     = _get_dvol('bnb', dq)
 
                 if btc_iv and eth_iv:
                     ts    = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -217,7 +219,7 @@ def launch_collector():
                     bsp   = round(btc_sp, 2) if btc_sp else ""
                     esp   = round(eth_sp, 2) if eth_sp else ""
 
-                    row = [ts, round(btc_iv,4), round(eth_iv,4), ratio, bsp, esp, round(funding,6) if funding else "", fear_greed if fear_greed else "", round(btc_greeks.get("delta",0),4), round(btc_greeks.get("gamma",0),6), round(btc_greeks.get("theta",0),4), round(btc_greeks.get("vega",0),4)]
+                    row = [ts, round(btc_iv,4), round(eth_iv,4), ratio, bsp, esp, round(funding,6) if funding else "", fear_greed if fear_greed else "", round(btc_greeks.get("delta",0),4), round(btc_greeks.get("gamma",0),6), round(btc_greeks.get("theta",0),4), round(btc_greeks.get("vega",0),4), round(sol_iv,4) if sol_iv else "", round(bnb_iv,4) if bnb_iv else ""]
 
                     with _lock:
                         pd.DataFrame([row], columns=_CSV_COLS).to_csv(

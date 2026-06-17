@@ -11,7 +11,7 @@ from threading import Thread, Lock
 import streamlit as st
 
 CSV_FILE  = "iv_data.csv"
-_CSV_COLS = ["Timestamp","BTC_IV","ETH_IV","BTC_ETH_Ratio","BTC_Spot","ETH_Spot"]
+_CSV_COLS = ["Timestamp","BTC_IV","ETH_IV","BTC_ETH_Ratio","BTC_Spot","ETH_Spot","Funding_Rate","Fear_Greed"]
 _lock     = Lock()
 
 SCOPES            = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
@@ -205,13 +205,16 @@ def launch_collector():
                 btc_sp = _get_spot("btc",  dq); time.sleep(0.5)
                 eth_sp = _get_spot("eth",  dq)
 
+                funding = get_funding_rate(dq)
+                fear_greed = get_fear_greed()
+
                 if btc_iv and eth_iv:
                     ts    = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     ratio = round(btc_iv / eth_iv, 6)
                     bsp   = round(btc_sp, 2) if btc_sp else ""
                     esp   = round(eth_sp, 2) if eth_sp else ""
 
-                    row = [ts, round(btc_iv,4), round(eth_iv,4), ratio, bsp, esp]
+                    row = [ts, round(btc_iv,4), round(eth_iv,4), ratio, bsp, esp, round(funding,6) if funding else "", fear_greed if fear_greed else ""]
 
                     with _lock:
                         pd.DataFrame([row], columns=_CSV_COLS).to_csv(
@@ -235,3 +238,27 @@ def launch_collector():
     t = Thread(target=_bot, daemon=True)
     t.start()
     return t
+
+def get_funding_rate(dq: dict) -> float | None:
+    """Deribit BTC Perpetual Funding Rate取得"""
+    url = "https://www.deribit.com/api/v2/public/get_funding_rate_value?instrument_name=BTC-PERPETUAL&start_timestamp=0&end_timestamp=9999999999999"
+    dq["api_calls"] += 1
+    try:
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        if r.status_code == 200:
+            return float(r.json()["result"])
+    except Exception:
+        pass
+    dq["api_failures"] += 1
+    return None
+
+
+def get_fear_greed() -> int | None:
+    """Alternative.me Fear & Greed Index取得"""
+    try:
+        r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=5)
+        if r.status_code == 200:
+            return int(r.json()["data"][0]["value"])
+    except Exception:
+        pass
+    return None

@@ -14,7 +14,7 @@ from config.settings import MARKET_STATES, VOL_REGIMES
 def get_classifier_store():  # v2
     return {"gmm_model":None,"gmm_scaler":None,"gmm_label_map":{},"state_history":[],"transition_cache":None}
 
-GMM_FEATURES = ["BTC_Z","ETH_Z","Ratio_Z","BTC_Mom5","ETH_Mom5","IV_Div_Z"]
+GMM_FEATURES = ["BTC_Z","ETH_Z","Ratio_Z","BTC_Mom5","ETH_Mom5","IV_Div_Z","Funding_Z","FG_Z"]
 
 def fit_gmm(store, df):
     available = [f for f in GMM_FEATURES if f in df.columns]

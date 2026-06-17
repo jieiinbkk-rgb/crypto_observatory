@@ -36,8 +36,35 @@ def check_risk_limits(store):
         return False, f"日次損失上限超過"
     return True, "OK"
 
+def kelly_position_size(confidence, opp_score, win_rate=0.55, avg_win=0.15, avg_loss=0.10):
+    """
+    Kelly基準でポジションサイズを動的計算
+    f = (p*b - q) / b
+    p = 勝率, q = 負け率, b = 平均勝ち/平均負け比
+    """
+    p = min(0.8, max(0.3, win_rate * confidence))
+    q = 1 - p
+    b = avg_win / max(avg_loss, 0.01)
+    kelly = (p * b - q) / b
+    # ハーフケリー（過剰リスク防止）
+    half_kelly = max(0.01, min(0.10, kelly * 0.5))
+    # Opportunity Scoreで調整
+    score_factor = 0.5 + (opp_score / 200)
+    return round(half_kelly * score_factor, 4)
+
 def open_trade(signal, store):
-    size_usd = store["capital"] * POSITION_SIZE
+    # Kelly基準でポジションサイズを動的計算
+    closed = store["closed_trades"]
+    if len(closed) >= 5:
+        wins    = [t for t in closed if t["current_pnl_usd"] > 0]
+        wr      = len(wins) / len(closed)
+        avg_win = float(np.mean([t["current_pnl_pct"] for t in wins])) if wins else 0.15
+        losses  = [t for t in closed if t["current_pnl_usd"] <= 0]
+        avg_loss= abs(float(np.mean([t["current_pnl_pct"] for t in losses]))) if losses else 0.10
+        kelly_size = kelly_position_size(signal.get("confidence",0.6), signal.get("opp_score",50), wr, avg_win, avg_loss)
+    else:
+        kelly_size = POSITION_SIZE
+    size_usd = store["capital"] * kelly_size
     cost     = size_usd * COMMISSION_RATE
     pos = {**signal,"entry_time":signal["timestamp"],"size_usd":round(size_usd,2),"cost_usd":round(cost,2),
            "entry_btc_iv":signal["btc_iv"],"entry_eth_iv":signal["eth_iv"],
@@ -124,12 +151,38 @@ def close_manually(pos, store, df):
         pos["current_pnl_usd"] = pnl_usd
     _close(pos, store, "MANUAL")
 
+def _notify_close(pos, reason):
+    """決済時にTelegram通知"""
+    try:
+        import streamlit as st
+        import requests
+        token   = st.secrets.get("TELEGRAM_TOKEN", "")
+        chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
+        if not token or not chat_id:
+            return
+        emoji = "✅" if reason == "TP" else ("🛑" if reason == "SL" else "⏰")
+        pnl   = pos.get("current_pnl_usd", 0)
+        pct   = pos.get("current_pnl_pct", 0) * 100
+        sign  = "+" if pnl >= 0 else ""
+        msg   = (f"{emoji} {reason} 決済\n"
+                 f"戦略: {pos.get('strategy_name','?')}\n"
+                 f"P&L: {sign}${pnl:.2f} ({sign}{pct:.2f}%)\n"
+                 f"状態: {pos.get('state','?')}")
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": msg},
+            timeout=5,
+        )
+    except Exception:
+        pass
+
 def _close(pos, store, reason):
     pos["status"]    = reason
     pos["exit_time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     store["capital"] += pos["size_usd"] + pos["current_pnl_usd"]
     store["positions"]     = [p for p in store["positions"] if p["id"] != pos["id"]]
     store["closed_trades"].append(pos)
+    _notify_close(pos, reason)
     if store["capital"] > store["peak_capital"]: store["peak_capital"] = store["capital"]
     dd = (store["peak_capital"] - store["capital"]) / store["peak_capital"] * 100
     if dd > store["max_drawdown"]: store["max_drawdown"] = round(dd, 2)

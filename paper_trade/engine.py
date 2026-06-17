@@ -14,6 +14,8 @@ IV_SENSITIVITY = {
     "ratio_spread": -0.6,
     "gamma_long":    1.5,
     "tail_hedge":    2.0,
+    "calendar_spread": -0.4,
+    "butterfly":       -0.8,
 }
 
 THETA_DECAY = {
@@ -21,6 +23,8 @@ THETA_DECAY = {
     "ratio_spread":  0.0001,
     "gamma_long":   -0.0003,
     "tail_hedge":   -0.0004,
+    "calendar_spread": +0.0003,
+    "butterfly":       +0.0001,
 }
 
 @st.cache_resource

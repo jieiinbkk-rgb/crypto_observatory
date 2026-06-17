@@ -16,7 +16,7 @@ MARKET_STATES = {
         "label":       "Risk-On",
         "color":       "#00c896",
         "description": "IV低下・クロス相関高・穏やかな市場",
-        "strategy":    "vol_sell",
+        "strategy":    "calendar_spread",
         "emoji":       "🟢",
     },
     "hedging": {
@@ -30,7 +30,7 @@ MARKET_STATES = {
         "label":       "Vol Squeeze",
         "color":       "#ffd700",
         "description": "IV急激に低下・ブレイクアウト前兆",
-        "strategy":    "gamma_long",
+        "strategy":    "butterfly",
         "emoji":       "🟡",
     },
     "panic": {
@@ -77,6 +77,24 @@ STRATEGIES = {
         "stop_pnl_pct":   -0.20,
         "rationale":      "Vol スクイーズからのブレイクアウトを期待したガンマ買い",
         "risk":           "時間価値の減衰（セータ）・方向性リスク",
+    },
+    "calendar_spread": {
+        "name":           "Calendar Spread",
+        "action":         "SPREAD",
+        "legs":           ["Short Near-term", "Long Far-term"],
+        "target_pnl_pct": 0.10,
+        "stop_pnl_pct":   -0.08,
+        "rationale":      "短期IVが長期IVより高い局面での時間軸スプレッド",
+        "risk":           "方向性リスク・流動性リスク",
+    },
+    "butterfly": {
+        "name":           "Butterfly Spread",
+        "action":         "BUY",
+        "legs":           ["Long Lower Strike", "Short 2x ATM", "Long Upper Strike"],
+        "target_pnl_pct": 0.20,
+        "stop_pnl_pct":   -0.10,
+        "rationale":      "IV低下局面でのレンジ内収束を狙う",
+        "risk":           "レンジ外への大きな動きで全損",
     },
     "tail_hedge": {
         "name":           "Tail Hedge",

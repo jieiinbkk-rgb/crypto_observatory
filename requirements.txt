@@ -6,4 +6,4 @@ scipy
 scikit-learn
 gspread
 google-auth
-google-auth-oauthlib
+google-auth-oauthlibmatplotlib

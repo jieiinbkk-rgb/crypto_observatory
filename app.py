@@ -170,7 +170,7 @@ eth_iv_now   = float(latest.get("ETH_IV") or 0)
 state_info   = MARKET_STATES[state_key]
 
 # Signal generation
-signal = generate_signal(state_key, confidence, df, port_store["positions"], opp_score)
+signal = generate_signal(state_key, confidence, df, port_store["positions"], opp_score, clf_store)
 if auto_trade and signal:
     open_trade(signal, port_store)
     sheet_append(ws_sig, [

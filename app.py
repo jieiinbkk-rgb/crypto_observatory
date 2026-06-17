@@ -677,6 +677,29 @@ with tab_bt:
         st.markdown("#### シグナル履歴テーブル")
         st.dataframe(signal_history_df[::-1], use_container_width=True, height=260)
 
+        # 教師あり学習
+        st.markdown("#### 🤖 教師あり学習（自動ラベリング）")
+        try:
+            from strategy.labeler import label_signals, train_simple_classifier
+            labeled_df = label_signals(df, signal_history_df)
+            if labeled_df.empty:
+                st.info("ラベル付けにはシグナル発生後1時間以上のデータが必要です。")
+            else:
+                st.success(f"✅ {len(labeled_df)} 件のラベル付きデータ")
+                win_rate = labeled_df["Label_1h"].mean() * 100
+                st.metric("予測正解率", f"{win_rate:.1f}%")
+                st.dataframe(labeled_df[::-1], use_container_width=True, height=200)
+
+                clf, msg = train_simple_classifier(labeled_df)
+                if clf:
+                    st.success(f"🎯 RandomForest学習完了 · {msg}")
+                    importances = clf.feature_importances_
+                    st.markdown(f"特徴量重要度: Confidence={importances[0]:.2f} / OppScore={importances[1]:.2f}")
+                else:
+                    st.info(msg)
+        except Exception as e:
+            st.warning(f"教師あり学習エラー: {e}")
+
 # ────────────────────────────────────────────────────────────
 # TAB 9: Data & System
 # ────────────────────────────────────────────────────────────

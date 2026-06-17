@@ -388,10 +388,11 @@ with tab_state:
             sclr  = clf_store["gmm_scaler"]
             lmap  = clf_store["gmm_label_map"]
             means = sclr.inverse_transform(gmm.means_)
+            feat_names = ["BTC_Z","ETH_Z","Ratio_Z","BTC_Mom5","ETH_Mom5","IV_Div_Z"]
             rows  = [{
                 "Cluster": i, "→ State": MARKET_STATES[lmap.get(i,"unknown")]["label"],
-                "Weight%": f"{w*100:.1f}%", "BTC_Z": f"{m[0]:.2f}",
-                "ETH_Z": f"{m[1]:.2f}", "Ratio_Z": f"{m[2]:.2f}",
+                "Weight%": f"{w*100:.1f}%",
+                **{feat_names[j]: f"{m[j]:.2f}" for j in range(min(len(m),len(feat_names)))}
             } for i,(m,w) in enumerate(zip(means, gmm.weights_))]
             st.dataframe(pd.DataFrame(rows), use_container_width=True)
 

@@ -171,6 +171,7 @@ def load_raw_data(ws_iv=None) -> pd.DataFrame:
                 for col in ["BTC_IV","ETH_IV","BTC_ETH_Ratio","BTC_Spot","ETH_Spot"]:
                     if col in df.columns:
                         df[col] = pd.to_numeric(df[col], errors="coerce")
+                df = df.loc[:,~df.columns.duplicated()]
                 return df.dropna(subset=["BTC_IV","ETH_IV"])
         except Exception:
             pass
@@ -184,6 +185,7 @@ def load_raw_data(ws_iv=None) -> pd.DataFrame:
         for col in ["BTC_IV","ETH_IV","BTC_ETH_Ratio","BTC_Spot","ETH_Spot"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.loc[:,~df.columns.duplicated()]
         return df.dropna(subset=["BTC_IV","ETH_IV"])
     except Exception:
         return pd.DataFrame()

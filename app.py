@@ -238,6 +238,16 @@ k[6].metric("Opp Score",     f"{opp_score}/100")
 pnl_str = f"+${stats['total_pnl_usd']:.0f}" if stats['total_pnl_usd'] >= 0 else f"-${abs(stats['total_pnl_usd']):.0f}"
 k[7].metric("Paper P&L", pnl_str, delta=f"{stats['win_rate']}% WR" if stats["total_trades"] else None)
 
+# 2行目KPI
+k2 = st.columns(4)
+fg_now = float(latest.get("Fear_Greed") or 0)
+fr_now = float(latest.get("Funding_Rate") or 0)
+fg_label = "Extreme Greed" if fg_now >= 75 else ("Greed" if fg_now >= 55 else ("Neutral" if fg_now >= 45 else ("Fear" if fg_now >= 25 else "Extreme Fear")))
+k2[0].metric("Fear & Greed", f"{int(fg_now)}" if fg_now else "N/A", delta=fg_label if fg_now else None)
+k2[1].metric("Funding Rate", f"{fr_now:.6f}" if fr_now else "N/A", delta="強気 🟢" if fr_now > 0 else ("弱気 🔴" if fr_now < 0 else None))
+k2[2].metric("Vol Compression", f"{float(latest.get('Vol_Compression') or 0):.2f}")
+k2[3].metric("IV Divergence", f"{float(latest.get('IV_Divergence') or 0):.4f}")
+
 st.divider()
 
 # ══════════════════════════════════════════════════════════════

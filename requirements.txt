@@ -1,4 +1,3 @@
-streamlit
 requests
 pandas
 numpy
@@ -6,4 +5,5 @@ scipy
 scikit-learn
 gspread
 google-auth
-google-auth-oauthlibmatplotlib
+google-auth-oauthlib
+matplotlib

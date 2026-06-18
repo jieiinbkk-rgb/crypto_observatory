@@ -311,7 +311,7 @@ with tab_iv:
         fr_data = chart_idx[["Funding_Rate"]].dropna() if "Funding_Rate" in chart_idx.columns else pd.DataFrame()
         if not fr_data.empty:
             st.markdown("#### Funding Rate")
-            latest_fr = float(fr_data.iloc[-1]["Funding_Rate"])
+            latest_fr = float(fr_data.iloc[-1].get("Funding_Rate") or 0)
             fr_label = "強気 🟢" if latest_fr > 0 else "弱気 🔴"
             st.metric("現在値", f"{latest_fr:.6f}", delta=fr_label)
             st.line_chart(fr_data, color="#00c896" if latest_fr >= 0 else "#ff4b4b", height=160)

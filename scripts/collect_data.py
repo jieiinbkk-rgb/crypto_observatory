@@ -18,7 +18,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-SHEET_ID  = "1C4Gd0AqHcMNg-QHhMCGoNzONyse5NMBGCfHjcuVcOKY"
+SHEET_ID  = "1k3lJ1_ru8ubhqV5p_CQgjlEtYSgxeVEDTraPUFifOE0"
 BASE      = "https://www.deribit.com/api/v2/public"
 
 def get_dvol(symbol):
@@ -75,7 +75,7 @@ def main():
     try:
         ws = sh.worksheet("iv_data")
     except Exception:
-        ws = sh.add_worksheet(title="iv_data", rows=3000, cols=20)
+        ws = sh.add_worksheet(title="iv_data", rows=100000, cols=20)
         ws.append_row(["Timestamp","BTC_IV","ETH_IV","BTC_ETH_Ratio",
                        "BTC_Spot","ETH_Spot","Funding_Rate","Fear_Greed",
                        "BTC_Delta","BTC_Gamma","BTC_Theta","BTC_Vega",
@@ -107,14 +107,6 @@ def main():
         fear_greed if fear_greed else "",
         "", "", "", "", "", ""
     ]
-
-    # 2000行を超えたら古いデータを削除
-    all_values = ws.get_all_values()
-    if len(all_values) > 2000:
-        # ヘッダー + 最新1900行だけ残す
-        keep = [all_values[0]] + all_values[-1900:]
-        ws.clear()
-        ws.update("A1", keep)
 
     ws.append_row(row, value_input_option="USER_ENTERED")
     print(f"OK: {ts} BTC_IV={btc_iv} ETH_IV={eth_iv}")

@@ -8,7 +8,7 @@ MAX_POSITIONS   = 5
 IV_RV_ALERT     = 5.0          # IV-RV スプレッド警告閾値
 
 # Google Sheets ID（secrets.toml で上書き可能）
-SHEET_ID = "1C4Gd0AqHcMNg-QHhMCGoNzONyse5NMBGCfHjcuVcOKY"
+SHEET_ID = "1k3lJ1_ru8ubhqV5p_CQgjlEtYSgxeVEDTraPUFifOE0"
 
 # ── マーケット状態定義 ─────────────────────────────────────────
 MARKET_STATES = {

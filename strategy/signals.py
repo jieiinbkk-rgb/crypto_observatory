@@ -45,11 +45,11 @@ def generate_signal(state_key, confidence, df, positions, opp_score, clf_store=N
         tp = strat["target_pnl_pct"]      # パニック時は大きく取る
         sl = strat["stop_pnl_pct"]
     elif state_key == "squeeze":
-        tp = 0.05                          # スクイーズは中程度
-        sl = -0.03
+        tp = 0.02                          # スクイーズは2%
+        sl = -0.01
     else:
-        tp = 0.01                          # 通常相場は小さく頻繁に
-        sl = -0.015
+        tp = 0.005                         # 通常相場は0.5%で頻繁に
+        sl = -0.008
 
     return {
         "id":              str(uuid.uuid4())[:8].upper(),

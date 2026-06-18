@@ -240,7 +240,7 @@ k[7].metric("Paper P&L", pnl_str, delta=f"{stats['win_rate']}% WR" if stats["tot
 
 # 2行目KPI
 k2 = st.columns(4)
-fg_now = float(latest.get("Fear_Greed") or 0)
+fg_now = float(latest.get("Fear_Greed") or 0) if pd.notna(latest.get("Fear_Greed")) else 0
 fr_now = float(latest.get("Funding_Rate") or 0)
 fg_label = "Extreme Greed" if fg_now >= 75 else ("Greed" if fg_now >= 55 else ("Neutral" if fg_now >= 45 else ("Fear" if fg_now >= 25 else "Extreme Fear")))
 k2[0].metric("Fear & Greed", f"{int(fg_now)}" if fg_now else "N/A", delta=fg_label if fg_now else None)

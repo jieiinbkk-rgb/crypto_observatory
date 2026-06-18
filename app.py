@@ -303,7 +303,7 @@ with tab_iv:
         fg_data = chart_idx[["Fear_Greed"]].dropna() if "Fear_Greed" in chart_idx.columns else pd.DataFrame()
         if not fg_data.empty:
             st.markdown("#### Fear & Greed Index")
-            latest_fg = int(fg_data.iloc[-1]["Fear_Greed"])
+            latest_fg = int(float(fg_data.iloc[-1]["Fear_Greed"] or 0)) if str(fg_data.iloc[-1]["Fear_Greed"]) not in ["","nan","None"] else 0
             fg_label = "Extreme Greed 🤑" if latest_fg >= 75 else ("Greed 😊" if latest_fg >= 55 else ("Neutral 😐" if latest_fg >= 45 else ("Fear 😨" if latest_fg >= 25 else "Extreme Fear 😱")))
             st.metric("現在値", f"{latest_fg}", delta=fg_label)
             st.line_chart(fg_data, color="#ffd700", height=160)

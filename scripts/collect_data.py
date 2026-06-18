@@ -75,7 +75,7 @@ def main():
     try:
         ws = sh.worksheet("iv_data")
     except Exception:
-        ws = sh.add_worksheet(title="iv_data", rows=100000, cols=20)
+        ws = sh.add_worksheet(title="iv_data", rows=3000, cols=20)
         ws.append_row(["Timestamp","BTC_IV","ETH_IV","BTC_ETH_Ratio",
                        "BTC_Spot","ETH_Spot","Funding_Rate","Fear_Greed",
                        "BTC_Delta","BTC_Gamma","BTC_Theta","BTC_Vega",

@@ -687,7 +687,8 @@ with tab_res:
     corr_cols2 = [c for c in ["BTC_IV","ETH_IV","SOL_IV","BNB_IV"] if c in df.columns]
     if len(corr_cols2) >= 2:
         st.markdown("#### 4資産 IV 相関")
-        corr2 = df[corr_cols2].dropna().corr().round(3)
+        corr2_df = df[corr_cols2].apply(pd.to_numeric, errors="coerce").dropna()
+        corr2 = corr2_df.corr().round(3)
         def _color2(v):
             if v >= 0.7:  return "background-color:#00c89644"
             if v >= 0.3:  return "background-color:#00c89622"

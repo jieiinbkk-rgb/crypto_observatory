@@ -34,8 +34,7 @@ def get_gsheet_client():
         else:
             return None, None, None
 
-        import streamlit as st
-SHEET_ID = st.secrets.get("SHEET_ID", "")
+        from config.settings import SHEET_ID
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(SHEET_ID)
 

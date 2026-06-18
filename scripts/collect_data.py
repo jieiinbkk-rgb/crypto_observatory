@@ -108,6 +108,14 @@ def main():
         "", "", "", "", "", ""
     ]
 
+    # 2000行を超えたら古いデータを削除
+    all_values = ws.get_all_values()
+    if len(all_values) > 2000:
+        # ヘッダー + 最新1900行だけ残す
+        keep = [all_values[0]] + all_values[-1900:]
+        ws.clear()
+        ws.update("A1", keep)
+
     ws.append_row(row, value_input_option="USER_ENTERED")
     print(f"OK: {ts} BTC_IV={btc_iv} ETH_IV={eth_iv}")
 

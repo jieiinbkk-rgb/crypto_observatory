@@ -112,13 +112,13 @@ def compute_opportunity_score(df, state_key, confidence):
     conf_pts=int(confidence*25); score+=conf_pts; reasons.append(f"GMM信頼度 {confidence*100:.0f}% → +{conf_pts}pt")
     state_bonus={"panic":20,"squeeze":18,"hedging":12,"risk_on":8,"unknown":0}
     sb=state_bonus.get(state_key,0); score+=sb; reasons.append(f"状態[{state_key}] → +{sb}pt")
-    sp20=float(latest.get("BTC_Spread20") or 0); sp_pts=min(20,int(abs(sp20)/3)); score+=sp_pts
+    sp20=float(latest.get("BTC_Spread20") or 0) if str(latest.get("BTC_Spread20")) not in ["nan","None",""] else 0.0; sp_pts=min(20,int(abs(sp20)/3)); score+=sp_pts
     if sp_pts>5: reasons.append(f"IV-RVスプレッド {sp20:+.1f} → +{sp_pts}pt")
-    btc_z=abs(float(latest.get("BTC_Z") or 0)); z_pts=min(15,int(btc_z*4)); score+=z_pts
+    btc_z=abs(float(latest.get("BTC_Z") or 0) if str(latest.get("BTC_Z")) not in ["nan","None",""] else 0.0); z_pts=min(15,int(btc_z*4)); score+=z_pts
     if z_pts>4: reasons.append(f"|BTC_Z| {btc_z:.2f} → +{z_pts}pt")
-    mom=abs(float(latest.get("BTC_Mom5") or 0)); m_pts=min(10,int(mom*200)); score+=m_pts
+    mom=abs(float(latest.get("BTC_Mom5") or 0) if str(latest.get("BTC_Mom5")) not in ["nan","None",""] else 0.0); m_pts=min(10,int(mom*200)); score+=m_pts
     if m_pts>3: reasons.append(f"IV Mom {mom*100:.1f}% → +{m_pts}pt")
-    vc=float(latest.get("Vol_Compression") or 1.0)
+    vc=float(latest.get("Vol_Compression") or 1.0) if str(latest.get("Vol_Compression")) not in ["nan","None",""] else 1.0
     if vc<0.3:
         vc_pts=min(10,int((0.3-vc)*33)); score+=vc_pts; reasons.append(f"Vol圧縮 {vc:.2f} → +{vc_pts}pt")
     return min(100,max(0,score)),reasons

@@ -852,5 +852,29 @@ crypto_vol_platform_v3/
 # ══════════════════════════════════════════════════════════════
 #  AUTO REFRESH
 # ══════════════════════════════════════════════════════════════
-time.sleep(10)
+# データを直接取得
+try:
+    from data.collector import _get_dvol, _get_spot, _ensure_csv, _CSV_COLS, sheet_append
+    import pandas as pd
+    from datetime import datetime
+    _dq = {"api_calls": 0, "api_failures": 0}
+    _btc_iv = _get_dvol("btc", _dq)
+    _eth_iv = _get_dvol("eth", _dq)
+    _btc_sp = _get_spot("btc", _dq)
+    _eth_sp = _get_spot("eth", _dq)
+    if _btc_iv and _eth_iv:
+        _ts    = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _ratio = round(_btc_iv / _eth_iv, 6)
+        _row   = [_ts, round(_btc_iv,4), round(_eth_iv,4), _ratio,
+                  round(_btc_sp,2) if _btc_sp else "",
+                  round(_eth_sp,2) if _eth_sp else "",
+                  "", "", "", "", "", "", "", ""]
+        _ensure_csv()
+        pd.DataFrame([_row], columns=_CSV_COLS).to_csv(
+            "iv_data.csv", mode="a", header=False, index=False)
+        sheet_append(ws_iv, _row)
+except Exception:
+    pass
+
+time.sleep(60)
 st.rerun()

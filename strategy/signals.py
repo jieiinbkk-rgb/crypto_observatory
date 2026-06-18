@@ -40,6 +40,17 @@ def generate_signal(state_key, confidence, df, positions, opp_score, clf_store=N
     strat  = STRATEGIES[strat_key]
     latest = df.iloc[-1]
 
+    # 相場状態によってTP/SLを動的に調整
+    if state_key == "panic":
+        tp = strat["target_pnl_pct"]      # パニック時は大きく取る
+        sl = strat["stop_pnl_pct"]
+    elif state_key == "squeeze":
+        tp = 0.05                          # スクイーズは中程度
+        sl = -0.03
+    else:
+        tp = 0.01                          # 通常相場は小さく頻繁に
+        sl = -0.015
+
     return {
         "id":              str(uuid.uuid4())[:8].upper(),
         "timestamp":       datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
@@ -49,8 +60,8 @@ def generate_signal(state_key, confidence, df, positions, opp_score, clf_store=N
         "strategy_name":   strat["name"],
         "action":          strat["action"],
         "legs":            strat["legs"],
-        "target_pct":      strat["target_pnl_pct"],
-        "stop_pct":        strat["stop_pnl_pct"],
+        "target_pct":      tp,
+        "stop_pct":        sl,
         "btc_iv":          float(latest.get("BTC_IV") or 0),
         "eth_iv":          float(latest.get("ETH_IV") or 0),
         "opp_score":       opp_score,

@@ -140,9 +140,8 @@ def update_positions(store, df):
         pnl_pct, pnl_usd = _calc_pnl(pos, latest)
         pos["current_pnl_pct"] = pnl_pct
         pos["current_pnl_usd"] = pnl_usd
-        strat = STRATEGIES.get(pos.get("strategy", ""), {})
-        tp    = strat.get("target_pnl_pct", 0.15)
-        sl    = strat.get("stop_pnl_pct",  -0.25)
+        tp = pos.get("target_pct", 0.01)
+        sl = pos.get("stop_pct", -0.015)
         if pnl_pct >= tp: to_close.append((pos, "TP"))
         elif pnl_pct <= sl: to_close.append((pos, "SL"))
         elif pos["bars_held"] > 1440: to_close.append((pos, "TIMEOUT"))

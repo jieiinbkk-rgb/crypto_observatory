@@ -679,8 +679,11 @@ with tab_res:
     st.divider()
     st.markdown("#### 4資産 IV 比較")
     multi_iv_cols = [c for c in ["BTC_IV","ETH_IV","SOL_IV","BNB_IV"] if c in chart_idx.columns]
-    multi_iv_data = chart_idx[multi_iv_cols].dropna()
-    if not multi_iv_data.empty:
+    multi_iv_data = chart_idx[multi_iv_cols].apply(pd.to_numeric, errors="coerce").dropna(how="all")
+    multi_iv_data = multi_iv_data.dropna(axis=1, how="all")
+    if not multi_iv_data.empty and len(multi_iv_data.columns) >= 2:
+        st.line_chart(multi_iv_data, height=220)
+    elif not multi_iv_data.empty and len(multi_iv_data.columns) == 1:
         st.line_chart(multi_iv_data, height=220)
 
     # 相関マトリクス（4資産）

@@ -10,12 +10,12 @@ MAX_DRAWDOWN_LIMIT = 10.0
 MAX_DAILY_LOSS     = 5.0
 
 IV_SENSITIVITY = {
-    "vol_sell":     -3.0,
-    "ratio_spread": -2.0,
-    "gamma_long":    4.0,
-    "tail_hedge":    5.0,
-    "calendar_spread": -2.0,
-    "butterfly":       -2.5,
+    "vol_sell":     -1.2,
+    "ratio_spread": -0.8,
+    "gamma_long":    1.5,
+    "tail_hedge":    2.0,
+    "calendar_spread": -0.6,
+    "butterfly":       -1.0,
 }
 
 THETA_DECAY = {

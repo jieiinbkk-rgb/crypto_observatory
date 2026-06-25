@@ -1,883 +1,596 @@
 """
-╔══════════════════════════════════════════════════════════════════════╗
-║   Crypto Volatility Research Platform  v3.0                         ║
-║   モジュール分離設計 · 研究品質最優先                                  ║
-╚══════════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════╗
+║   Crypto Observatory  –  Live State Viewer  v4.1               ║
+╚══════════════════════════════════════════════════════════════════╝
 """
 import streamlit as st
 import pandas as pd
-import numpy as np
-from datetime import datetime
+import plotly.graph_objects as go
+import json
 import time
 
-# ── Config ────────────────────────────────────────────────────
-from config.settings import (
-    APP_VERSION, INITIAL_CAPITAL, MAX_POSITIONS,
-    MARKET_STATES, STRATEGIES, VOL_REGIMES, IV_RV_ALERT,
-    SHEET_ID,
-)
+import gspread
+from google.oauth2.service_account import Credentials
+import numpy as np
 
-# ── Data Layer ────────────────────────────────────────────────
-from data.collector import (
-    get_gsheet_client, get_dq_store, dq_score,
-    load_raw_data, load_signals, load_trades,
-    launch_collector, sheet_append,
-)
-from data.features import compute_features
+SHEET_ID = "1k3lJ1_ru8ubhqV5p_CQgjlEtYSgxeVEDTraPUFifOE0"
+SCOPES   = ["https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"]
 
-# ── Strategy Layer ────────────────────────────────────────────
-from strategy.classifier import (
-    get_classifier_store, fit_gmm, classify_state, record_state,
-    get_state_history_df, classify_vol_regime,
-    compute_transition_matrix, compute_opportunity_score,
-)
-from strategy.signals import generate_signal
+MARKET_STATES = {
+    "risk_on":  {"label": "Risk-On 🟢",   "color": "#00c896"},
+    "hedging":  {"label": "Hedging 🟡",   "color": "#ffd700"},
+    "squeeze":  {"label": "Squeeze 🔵",   "color": "#4b9eff"},
+    "panic":    {"label": "Panic 🔴",     "color": "#ff4b4b"},
+    "unknown":  {"label": "Observing ⚪", "color": "#888888"},
+}
 
-# ── Paper Trade Layer ─────────────────────────────────────────
-from paper_trade.engine import (
-    get_portfolio_store, open_trade, update_positions,
-    close_manually, portfolio_stats, equity_curve,
-)
-
-# ── Backtest Layer ────────────────────────────────────────────
-from backtest.engine import run_backtest
-
-# ── Execution Layer ───────────────────────────────────────────
-from execution.alerts import get_alert_store, fire_alerts, is_telegram_configured
-from execution.trading_interface import TradingInterface
-
-# ── UI Layer ──────────────────────────────────────────────────
-from ui.styles import CSS, opp_score_card, state_card, position_card
-
-# ══════════════════════════════════════════════════════════════
-#  PAGE CONFIG
-# ══════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title=f"Crypto Vol Research Platform v{APP_VERSION}",
+    page_title="Crypto Observatory v4.1",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
-st.markdown(CSS, unsafe_allow_html=True)
+
+st.markdown("""
+<style>
+[data-testid="stApp"] { background: #0d0e13; color: #c8cad4; }
+.metric-card { background: #161820; border: 1px solid #2a2d3e; border-radius: 10px; padding: 14px 18px; text-align: center; }
+.metric-label { font-size: .72rem; color: #666; text-transform: uppercase; letter-spacing: .08em; }
+.metric-value { font-size: 1.4rem; font-weight: 700; color: #e0e2ec; margin-top: .2rem; }
+.pos-card { background: #161820; border: 1px solid #2a2d3e; border-radius: 8px; padding: 12px 16px; margin: .4rem 0; font-size: .85rem; }
+.grid-row { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid #222; font-size: .82rem; }
+.badge { display: inline-block; padding: .2em .7em; border-radius: 4px; font-size: .75rem; font-weight: 600; }
+.badge-buy  { background: #00c89622; color: #00c896; border: 1px solid #00c89644; }
+.badge-sell { background: #ff4b4b22; color: #ff4b4b; border: 1px solid #ff4b4b44; }
+.badge-wait { background: #88888822; color: #888; border: 1px solid #88888844; }
+</style>
+""", unsafe_allow_html=True)
+
 
 # ══════════════════════════════════════════════════════════════
-#  INIT (once per session, cached)
+#  Google Sheets 接続
 # ══════════════════════════════════════════════════════════════
-launch_collector()
+@st.cache_resource
+def get_sheet():
+    try:
+        creds = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"], scopes=SCOPES)
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(SHEET_ID)
+        return sh.worksheet("live_state"), None
+    except Exception as e:
+        return None, str(e)
 
-ws_iv, ws_sig, ws_trd = get_gsheet_client()
-sheet_ok   = ws_iv  is not None
-signals_ok = ws_sig is not None
 
-clf_store   = get_classifier_store()
-port_store  = get_portfolio_store()
-dq_store    = get_dq_store()
-alert_store = get_alert_store()
-trading_if  = TradingInterface()
+def load_live_state(ws):
+    if ws is None:
+        return None, None
+    try:
+        row = ws.row_values(2)
+        if len(row) < 2:
+            return None, None
+        return row[0], json.loads(row[1])
+    except Exception as e:
+        return None, None
 
-# ══════════════════════════════════════════════════════════════
-#  SIDEBAR
-# ══════════════════════════════════════════════════════════════
-with st.sidebar:
-    st.markdown(f"## ⚙️ 設定  `v{APP_VERSION}`")
-
-    auto_trade = st.toggle("🤖 自動シグナル → ペーパートレード", value=True)
-    gmm_window = st.slider("GMM 学習データ数",  30, 300, 100, 10)
-    display_n  = st.slider("チャート表示件数",  50, 500, 300, 50)
-
-    st.markdown("---")
-    st.markdown("### 📡 接続状態")
-    st.success("✅ Google Sheets") if sheet_ok else st.warning("⚠️ CSV モード")
-    if is_telegram_configured():
-        st.success("✅ Telegram 接続中")
-    else:
-        st.info("💬 Telegram 未設定\n\nsecrets.toml に\nTELEGRAM_TOKEN と\nTELEGRAM_CHAT_ID を追加")
-
-    # Data Quality
-    dq_s, dq_st = dq_score(dq_store)
-    st.markdown("---")
-    st.markdown(f"### 🔬 System Health  {dq_st}")
-    st.progress(dq_s / 100, text=f"{dq_s}/100")
-    st.caption(
-        f"API calls: {dq_store['api_calls']} | "
-        f"Failures: {dq_store['api_failures']} | "
-        f"Last: {dq_store['last_success'].strftime('%H:%M:%S') if dq_store['last_success'] else 'N/A'}"
-    )
-
-    st.markdown("---")
-    st.markdown("### 🗺️ ステップ進捗")
-    steps = [
-        ("✅ Step 1  Data Collection",    "done"),
-        ("✅ Step 2  Anomaly Detection",   "done"),
-        ("✅ Step 3  Market State (GMM)",  "done"),
-        ("✅ Step 4  Strategy Engine",     "done"),
-        ("✅ Step 5  Paper Trading",       "done"),
-        ("✅ Step 6  Google Sheets",       "done"),
-        ("✅ Step 7  Opportunity Score",   "done"),
-        ("✅ Step 8  IV-RV Spread",        "done"),
-        ("✅ Step 9  Vol Regime",          "done"),
-        ("✅ Step 10 Transition Matrix",   "done"),
-        ("✅ Step 11 Signal DB",           "done"),
-        ("✅ Step 12 Backtest Engine",     "done"),
-        ("✅ Step 13 Research Dashboard",  "done"),
-        ("✅ Step 14 Telegram Alerts",     "done"),
-        ("✅ Step 15 Data Quality",        "done"),
-        ("✅ Step 16 Modular Architecture","done"),
-        ("⚪ Step 17 Live Trading",        ""),
-    ]
-    for label, cls in steps:
-        st.markdown(f'<div class="roadmap {cls}">{label}</div>', unsafe_allow_html=True)
-
-    st.markdown("---")
-    if st.button("🗑️ ペーパートレードリセット", type="secondary"):
-        port_store["positions"]     = []
-        port_store["closed_trades"] = []
-        port_store["capital"]       = INITIAL_CAPITAL
-        port_store["peak_capital"]  = INITIAL_CAPITAL
-        port_store["max_drawdown"]  = 0.0
-        st.success("リセット完了")
-
-# ══════════════════════════════════════════════════════════════
-#  DATA PIPELINE
-# ══════════════════════════════════════════════════════════════
-raw = load_raw_data(ws_iv)
-
-if raw.empty:
-    st.info("🔄 データ取得中... 初回は約1分かかります。しばらくお待ちください。")
-    time.sleep(10)
-    st.rerun()
-
-df = compute_features(raw.copy())
-
-# Data quality update
-dq_store["total_rows"]    = len(df)
-dq_store["missing_count"] = int(df[["BTC_IV","ETH_IV"]].isna().sum().sum())
-
-# GMM fit + classify（30分に1回だけ再学習）
-import datetime as _dt
-_now = _dt.datetime.utcnow()
-_last = clf_store.get("last_fit")
-if _last is None or (_now - _last).seconds >= 1800:
-    fit_gmm(clf_store, df.tail(gmm_window))
-    clf_store["last_fit"] = _now
-state_key, confidence, method = classify_state(clf_store, df)
-record_state(clf_store, state_key, confidence, method)
-
-# Derived metrics
-opp_score, opp_reasons             = compute_opportunity_score(df, state_key, confidence)
-vol_regime, regime_label, iv_pct   = classify_vol_regime(df)
-transition_mx                       = compute_transition_matrix(clf_store)
-
-latest       = df.iloc[-1]
-btc_z_now    = float(latest.get("BTC_Z")  or 0)
-eth_z_now    = float(latest.get("ETH_Z")  or 0)
-btc_iv_now   = float(latest.get("BTC_IV") or 0)
-eth_iv_now   = float(latest.get("ETH_IV") or 0)
-state_info   = MARKET_STATES[state_key]
-
-# Signal generation
-signal = generate_signal(state_key, confidence, df, port_store["positions"], opp_score, clf_store)
-if auto_trade and signal:
-    from paper_trade.engine import check_risk_limits
-    risk_ok, risk_msg = check_risk_limits(port_store)
-    if risk_ok:
-        open_trade(signal, port_store)
-    else:
-        pass  # リスク上限超過のためスキップ
-    sheet_append(ws_sig, [
-        signal["timestamp"], signal["state"], round(signal["confidence"],4),
-        signal["id"], signal["strategy"], round(signal["btc_iv"],4),
-        round(signal["eth_iv"],4), opp_score, method,
-    ])
-
-# Update paper trades
-update_positions(port_store, df)
-
-# Telegram alerts
-fire_alerts(state_key, btc_z_now, eth_z_now, opp_score,
-            confidence, btc_iv_now, eth_iv_now, alert_store)
-
-# Load historical data
-signal_history_df = load_signals(ws_sig)
-
-# Chart data
-df_disp   = df.tail(display_n)
-chart_idx = df_disp.set_index("Timestamp")
-stats     = portfolio_stats(port_store)
-anomaly_count = int(df["Anomaly"].fillna(False).sum())
 
 # ══════════════════════════════════════════════════════════════
 #  HEADER
 # ══════════════════════════════════════════════════════════════
-h1, h2, h3 = st.columns([2, 1, 1])
-with h1:
-    st.markdown(f"# 🛰️ Crypto Volatility Research Platform `v{APP_VERSION}`")
-    src = "Google Sheets" if sheet_ok else "CSV Local"
-    st.caption(f"Deribit DVOL · 1-min · {len(df)} rows · {src} · Last: {latest['Timestamp']}")
+st.markdown("# 🛰️ Crypto Observatory `v4.1`")
 
-with h2:
-    st.markdown(state_card(state_info, confidence, method), unsafe_allow_html=True)
+ws, conn_err = get_sheet()
 
-with h3:
-    st.markdown(opp_score_card(opp_score, opp_reasons), unsafe_allow_html=True)
+if ws is None:
+    st.error(f"⚠️ Google Sheets接続失敗: `{conn_err}`")
+    st.info("Streamlit Cloud → Settings → Secrets に `gcp_service_account` が設定されているか確認してください。")
+    st.stop()
 
-st.divider()
+updated_at, live_state = load_live_state(ws)
 
-# ── KPI Row ───────────────────────────────────────────────────
-def _delta(col):
-    s = df[col]
-    return round(float(s.iloc[-1] - s.iloc[-2]), 4) if len(s) >= 2 else None
+if live_state is None:
+    st.warning("live_stateデータなし。VMエンジンが起動していない可能性があります。")
+    time.sleep(60)
+    st.rerun()
 
-k = st.columns(8)
-k[0].metric("BTC ATM IV",    f"{btc_iv_now:.2f}",                  delta=_delta("BTC_IV"))
-k[1].metric("ETH ATM IV",    f"{eth_iv_now:.2f}",                  delta=_delta("ETH_IV"))
-k[2].metric("BTC/ETH Ratio", f"{latest['BTC_ETH_Ratio']:.4f}",     delta=_delta("BTC_ETH_Ratio"))
-k[3].metric("BTC Z-score",   f"{btc_z_now:.2f}")
-k[4].metric("Vol Regime",    " ".join(regime_label.split()[:2]))
-k[5].metric("Anomalies",     f"{anomaly_count}")
-k[6].metric("Opp Score",     f"{opp_score}/100")
-pnl_str = f"+${stats['total_pnl_usd']:.0f}" if stats['total_pnl_usd'] >= 0 else f"-${abs(stats['total_pnl_usd']):.0f}"
-k[7].metric("Paper P&L", pnl_str, delta=f"{stats['win_rate']}% WR" if stats["total_trades"] else None)
+st.caption(f"VM最終更新: {updated_at or '—'}　|　60秒ごとに自動更新")
 
-# 2行目KPI
-k2 = st.columns(4)
-fg_now = float(latest.get("Fear_Greed") or 0) if pd.notna(latest.get("Fear_Greed")) else 0
-fr_now = float(latest.get("Funding_Rate") or 0)
-fg_label = "Extreme Greed" if fg_now >= 75 else ("Greed" if fg_now >= 55 else ("Neutral" if fg_now >= 45 else ("Fear" if fg_now >= 25 else "Extreme Fear")))
-k2[0].metric("Fear & Greed", f"{int(fg_now)}" if fg_now else "N/A", delta=fg_label if fg_now else None)
-k2[1].metric("Funding Rate", f"{fr_now:.6f}" if fr_now else "N/A", delta="強気 🟢" if fr_now > 0 else ("弱気 🔴" if fr_now < 0 else None))
-k2[2].metric("Vol Compression", f"{float(latest.get('Vol_Compression') or 0):.2f}")
-k2[3].metric("IV Divergence", f"{float(latest.get('IV_Divergence') or 0):.4f}")
+ms    = live_state.get("market_state", {})
+skey  = ms.get("state", "unknown")
+sinfo = MARKET_STATES.get(skey, MARKET_STATES["unknown"])
+
+h1, h2, h3, h4, h5 = st.columns(5)
+h1.markdown(f'<div class="metric-card"><div class="metric-label">市場状態</div><div class="metric-value" style="color:{sinfo["color"]}">{sinfo["label"]}</div></div>', unsafe_allow_html=True)
+h2.markdown(f'<div class="metric-card"><div class="metric-label">Confidence</div><div class="metric-value">{ms.get("confidence",0)*100:.0f}%</div></div>', unsafe_allow_html=True)
+h3.markdown(f'<div class="metric-card"><div class="metric-label">機会スコア</div><div class="metric-value">{ms.get("opp_score",0)}/100</div></div>', unsafe_allow_html=True)
+h4.markdown(f'<div class="metric-card"><div class="metric-label">GMM</div><div class="metric-value">{"稼働中 ✅" if ms.get("gmm_active") else "学習中 ⏳"}</div></div>', unsafe_allow_html=True)
+total_rows = ms.get("total_rows", ms.get("n_samples", 0))
+h5.markdown(f'<div class="metric-card"><div class="metric-label">データ数</div><div class="metric-value">{total_rows:,}</div></div>', unsafe_allow_html=True)
 
 st.divider()
 
 # ══════════════════════════════════════════════════════════════
 #  TABS
 # ══════════════════════════════════════════════════════════════
-tabs = st.tabs([
-    "📈 IV Monitor",
-    "🚨 Anomaly",
-    "🧠 Market State",
-    "📊 IV-RV Spread",
-    "⚡ Strategy",
-    "💼 Paper Trading",
-    "🔬 Research",
-    "⏮️ Backtest",
-    "🗄️ Data & System",
+tab_grid, tab_pmr, tab_bt, tab_paper, tab_state, tab_sys = st.tabs([
+    "🟪 Grid BOT", "💹 PMR BOT", "🔬 バックテスト", "💼 Paper Trading", "🧠 Market State", "🗄️ System",
 ])
-(tab_iv, tab_anom, tab_state, tab_spread,
- tab_strat, tab_paper, tab_res, tab_bt, tab_data) = tabs
 
-# ────────────────────────────────────────────────────────────
-# TAB 1: IV Monitor
-# ────────────────────────────────────────────────────────────
-with tab_iv:
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("#### BTC / ETH ATM IV")
-        st.line_chart(chart_idx[["BTC_IV","ETH_IV"]], height=260)
-    with c2:
-        st.markdown("#### BTC/ETH IV Ratio")
-        st.line_chart(chart_idx[["BTC_ETH_Ratio"]], color="#ffd700", height=260)
 
-    c3, c4 = st.columns(2)
-    with c3:
-        spot = chart_idx[["BTC_Spot"]].dropna()
-        if not spot.empty:
-            st.markdown("#### BTC Spot Price")
-            st.line_chart(spot, color="#f7931a", height=200)
-    with c4:
-        spot = chart_idx[["ETH_Spot"]].dropna()
-        if not spot.empty:
-            st.markdown("#### ETH Spot Price")
-            st.line_chart(spot, color="#627eea", height=200)
+# ════════════════════════════════════════════════════════════
+#  TAB 1: Grid BOT
+# ════════════════════════════════════════════════════════════
+with tab_grid:
+    gb = live_state.get("grid_bot", {})
+    gs = gb.get("summary", {})
 
-    rv_cols = [c for c in ["BTC_RV10","ETH_RV10"] if c in chart_idx.columns]
-    rv_data = chart_idx[rv_cols].dropna()
-    if not rv_data.empty:
-        st.markdown("#### Realized Vol Proxy (10-period)")
-        st.line_chart(rv_data, height=180)
+    st.markdown("## 🟪 グリッド BOT")
+    st.caption(f"VM最終更新: {updated_at}")
 
-    # Fear & Greed / Funding Rate
-    c5, c6 = st.columns(2)
-    with c5:
-        fg_data = chart_idx[["Fear_Greed"]].dropna() if "Fear_Greed" in chart_idx.columns else pd.DataFrame()
-        if not fg_data.empty:
-            st.markdown("#### Fear & Greed Index")
-            latest_fg = int(float(fg_data.iloc[-1]["Fear_Greed"] or 0)) if str(fg_data.iloc[-1]["Fear_Greed"]) not in ["","nan","None"] else 0
-            fg_label = "Extreme Greed 🤑" if latest_fg >= 75 else ("Greed 😊" if latest_fg >= 55 else ("Neutral 😐" if latest_fg >= 45 else ("Fear 😨" if latest_fg >= 25 else "Extreme Fear 😱")))
-            st.metric("現在値", f"{latest_fg}", delta=fg_label)
-            st.line_chart(fg_data, color="#ffd700", height=160)
-    with c6:
-        fr_data = chart_idx[["Funding_Rate"]].dropna() if "Funding_Rate" in chart_idx.columns else pd.DataFrame()
-        if not fr_data.empty:
-            st.markdown("#### Funding Rate")
-            latest_fr = float(fr_data.iloc[-1].get("Funding_Rate") or 0)
-            fr_label = "強気 🟢" if latest_fr > 0 else "弱気 🔴"
-            st.metric("現在値", f"{latest_fr:.6f}", delta=fr_label)
-            st.line_chart(fr_data, color="#00c896" if latest_fr >= 0 else "#ff4b4b", height=160)
+    active = gb.get("active", False)
+    paused = gb.get("paused_by_gmm", False)
+    status_label = "稼働中 🟢" if active else ("GMM停止中 🔵" if paused else "停止中 ⚪")
 
-# ────────────────────────────────────────────────────────────
-# TAB 2: Anomaly
-# ────────────────────────────────────────────────────────────
-with tab_anom:
-    z_data = chart_idx[[c for c in ["BTC_Z","ETH_Z","Ratio_Z"] if c in chart_idx.columns]].dropna()
-    if not z_data.empty:
-        a1, a2 = st.columns(2)
-        with a1:
-            st.markdown("#### IV Z-scores")
-            st.line_chart(z_data[["BTC_Z","ETH_Z"]], height=230)
-        with a2:
-            st.markdown("#### Ratio Z-score")
-            st.line_chart(z_data[["Ratio_Z"]], color="#ffd700", height=230)
+    g1, g2, g3, g4, g5, g6 = st.columns(6)
+    g1.metric("稼働時間",  gs.get("duration", "—") or "—")
+    g2.metric("実現P&L",  f"¥{gs.get('realized_pnl', 0):+.1f}")
+    g3.metric("総資産",   f"¥{gs.get('equity', 30000):,.1f}", delta=f"{gs.get('equity_pct',0):+.3f}%")
+    g4.metric("状態",     status_label)
+    g5.metric("取引回数", gb.get("total_trades", 0))
+    g6.metric("最大DD",   f"{gs.get('max_drawdown',0):.2f}%")
 
-    anomalies = df[df["Anomaly"].fillna(False)].copy()
-    if anomalies.empty:
-        st.success("✅ 現在、異常は検出されていません。")
-    else:
-        st.error(f"⚠️ {len(anomalies)} 件の異常を検出")
-        cols = ["Timestamp","BTC_IV","ETH_IV","BTC_ETH_Ratio","BTC_Z","ETH_Z","Ratio_Z","Anomaly_Reason"]
-        st.dataframe(
-            anomalies[[c for c in cols if c in anomalies.columns]].tail(60)[::-1],
-            use_container_width=True, height=280,
-        )
+    g7, g8, g9, g10 = st.columns(4)
+    n_trades = gb.get("total_trades", 0)
+    g7.metric("勝率",     f"{gs.get('win_rate',0):.1f}%" if n_trades > 0 else "—")
+    g8.metric("PF",       f"{gs.get('profit_factor',0):.2f}" if gs.get("profit_factor") else "—")
+    g9.metric("平均保有", f"{gs.get('avg_hold_min',0):.1f}分")
+    cp = gb.get("center_price")
+    g10.metric("センター", f"¥{cp:,.0f}" if cp else "—")
 
-# ────────────────────────────────────────────────────────────
-# TAB 3: Market State
-# ────────────────────────────────────────────────────────────
-with tab_state:
-    s1, s2 = st.columns([1, 2])
+    pause_reason = gb.get("pause_reason", "")
+    if pause_reason:
+        st.warning(f"停止理由: {pause_reason}")
 
-    with s1:
-        st.markdown("#### 状態定義")
-        for key, info in MARKET_STATES.items():
-            if key == "unknown": continue
-            is_cur = (key == state_key)
-            border = f"border:1px solid {info['color']}88;" if is_cur else ""
-            badge  = '<br><b style="color:#4b9eff;font-size:.7rem">← 現在</b>' if is_cur else ""
+    st.divider()
+
+    grids = gb.get("grids", [])
+    if grids:
+        st.markdown("#### グリッドレベル")
+        lower = gb.get("lower", 0)
+        upper = gb.get("upper", 0)
+        st.caption(f"レンジ: ¥{lower:,.0f} ～ ¥{upper:,.0f}")
+        for g in grids:
+            status = g.get("status", "")
+            price  = g.get("price", 0)
+            fills  = g.get("fills", 0)
+            badge  = ('<span class="badge badge-sell">SELL WAIT</span>' if status == "sell_wait"
+                      else '<span class="badge badge-buy">BUY WAIT</span>' if status == "buy_wait"
+                      else '<span class="badge badge-wait">DONE</span>')
             st.markdown(
-                f'<div class="card" style="{border}margin-bottom:.4rem;">'
-                f'<span class="state-pill" style="background:{info["color"]}22;color:{info["color"]};'
-                f'border:1px solid {info["color"]}44;font-size:.85rem;">{info["label"]}</span>'
-                f'{badge}<div style="font-size:.75rem;color:#777;margin-top:.3rem;">'
-                f'{info["description"]}</div></div>', unsafe_allow_html=True)
+                f'<div class="grid-row"><span style="width:180px;color:#888;font-size:.8rem">¥{price:,.0f}</span>'
+                f'{badge}<span style="color:#666;font-size:.78rem;margin-left:8px">約定{fills}回</span></div>',
+                unsafe_allow_html=True)
 
-        rc = VOL_REGIMES[vol_regime]["color"]
-        st.markdown(
-            f'<div class="card" style="border-color:{rc}55;">'
-            f'<div class="label">VOLATILITY REGIME</div>'
-            f'<span class="regime-badge" style="background:{rc}22;color:{rc};border:1px solid {rc}44;">'
-            f'{VOL_REGIMES[vol_regime]["label"]}</span>'
-            f'<div style="font-size:.75rem;color:#777;margin-top:.3rem;">'
-            f'IV Percentile: <b style="color:{rc}">{iv_pct:.0f}th</b></div>'
-            f'</div>', unsafe_allow_html=True)
+    holdings = gb.get("holdings", [])
+    if holdings:
+        st.markdown(f"#### 保有ポジション ({len(holdings)}件)")
+        for h in holdings:
+            st.markdown(
+                f'<div class="pos-card">入値: <b>¥{h.get("buy_price",0):,.0f}</b> → '
+                f'売り目標: <b style="color:#00c896">¥{h.get("sell_target",0):,.0f}</b> '
+                f'| {h.get("size_btc",0):.5f} BTC</div>', unsafe_allow_html=True)
 
-        gmm_ok = "✅ GMM稼働中" if clf_store.get("gmm_model") else "⏳ データ蓄積中..."
-        st.info(f"分類器: **{method}** · {gmm_ok}")
+    rcurve = gb.get("realized_curve", [])
+    if len(rcurve) > 1:
+        st.markdown("#### 実現P&L推移")
+        color = "#00c896" if rcurve[-1] >= 0 else "#ff4b4b"
+        rgb   = ",".join(str(int(color.lstrip("#")[i:i+2], 16)) for i in (0,2,4))
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(y=rcurve, mode="lines",
+            line=dict(color=color, width=2), fill="tozeroy",
+            fillcolor=f"rgba({rgb},0.1)", name="実現P&L"))
+        fig.update_layout(height=220, margin=dict(l=0,r=0,t=20,b=0),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            yaxis=dict(gridcolor="#222", zerolinecolor="#444"),
+            xaxis=dict(gridcolor="#222"), font=dict(color="#aaa"))
+        st.plotly_chart(fig, use_container_width=True)
 
-    with s2:
-        st.markdown("#### 状態遷移履歴")
-        hist_df = get_state_history_df(clf_store)
-        if not hist_df.empty:
-            state_int = {"risk_on":1,"hedging":2,"squeeze":3,"panic":4,"unknown":0}
-            hist_df["State_Int"] = hist_df["State"].map(state_int).fillna(0)
-            st.line_chart(hist_df.set_index("Timestamp")[["State_Int","Confidence"]], height=200)
-            hist_df["Prev"] = hist_df["State"].shift(1)
-            for _, row in hist_df[hist_df["State"] != hist_df["Prev"]].tail(15)[::-1].iterrows():
-                info  = MARKET_STATES.get(row["State"], MARKET_STATES["unknown"])
-                c     = info["color"]
-                st.markdown(
-                    f'<div class="trade-row">'
-                    f'<span style="color:#555;font-size:.75rem;min-width:130px">{row["Timestamp"]}</span>'
-                    f'<span class="state-pill" style="background:{c}22;color:{c};'
-                    f'border:1px solid {c}44;font-size:.75rem;padding:.15em .6em">{info["label"]}</span>'
-                    f'<span style="color:#777;font-size:.75rem">'
-                    f'conf: {row["Confidence"]*100:.0f}% · {row["Method"]}</span>'
-                    f'</div>', unsafe_allow_html=True)
+    trade_log = gb.get("trade_log", [])
+    st.markdown(f"#### 約定ログ（最新{len(trade_log)}件）")
+    if trade_log:
+        st.dataframe(pd.DataFrame(trade_log[::-1]), use_container_width=True, hide_index=True)
+    else:
+        st.info("まだ約定なし。グリッドレンジ内の価格変動を待機中。")
+
+
+# ════════════════════════════════════════════════════════════
+#  TAB 2: PMR BOT
+# ════════════════════════════════════════════════════════════
+with tab_pmr:
+    pmr = live_state.get("pmr_bot", {})
+    ps  = pmr.get("summary", {})
+
+    st.markdown("## 💹 プレミアム平均回帰 BOT")
+    st.caption(f"VM最終更新: {updated_at}")
+
+    if not ps:
+        st.info("PMR BOT 初期化中... データ蓄積待ち（最低100サンプル必要）")
+    else:
+        p1, p2, p3, p4, p5, p6 = st.columns(6)
+        p1.metric("実現P&L",  f"¥{ps.get('realized_pnl',0):+.1f}")
+        p2.metric("含み損益", f"¥{ps.get('unrealized_pnl',0):+.1f}")
+        ep_p = ps.get('equity_pct', 0.0)
+        p3.metric("総資産",   f"¥{ps.get('equity',30000):,.1f}", delta=f"{ep_p:+.3f}%" if ep_p else None)
+        p4.metric("最大DD",   f"{ps.get('max_drawdown',0):.2f}%")
+        p5.metric("取引回数", ps.get("total_trades", 0))
+        p6.metric("勝率",     f"{ps.get('win_rate',0):.1f}%" if ps.get("total_trades",0) > 0 else "—")
+
+        p7, p8, p9, p10 = st.columns(4)
+        p7.metric("平均保有", f"{ps.get('avg_hold_min',0):.1f}分")
+        has_pos  = ps.get("has_position", False)
+        pos_data = ps.get("position")
+        p8.metric("ポジション", "保有中 🟢" if has_pos else "待機中 ⚪")
+        if pos_data:
+            p9.metric("入りパーセンタイル",  f"{pos_data.get('entry_percentile',0):.1f}%tile")
+            p10.metric("現在パーセンタイル", f"{pos_data.get('current_percentile',0):.1f}%tile")
+
+        st.divider()
+
+        if has_pos and pos_data:
+            pnl_c = pos_data.get("current_pnl", 0)
+            icon  = "🟢" if pnl_c >= 0 else "🔴"
+            st.markdown(f"""<div class="pos-card" style="border-color:#4b9eff44;">
+<b>オープンポジション</b><br>
+入値: ¥{pos_data.get('entry_price',0):,.0f} | 入りプレミアム: {pos_data.get('entry_premium',0):+.4f}% | 保有: {pos_data.get('bars_held',0)}分<br>
+現在値: ¥{pos_data.get('current_price',0):,.0f} | 現在プレミアム: {pos_data.get('current_premium',0):+.4f}% ({pos_data.get('current_percentile',0):.1f}%ile)<br>
+{icon} 含み損益: <b>¥{pnl_c:+.1f}</b> ({pos_data.get('current_pct',0):+.3f}%)
+</div>""", unsafe_allow_html=True)
+            st.write("")
+
+        rcurve_p = ps.get("realized_curve", [])
+        if len(rcurve_p) > 1:
+            st.markdown("#### 実現P&L推移")
+            color_p = "#00c896" if rcurve_p[-1] >= 0 else "#ff4b4b"
+            rgb_p   = ",".join(str(int(color_p.lstrip("#")[i:i+2], 16)) for i in (0,2,4))
+            figp = go.Figure()
+            figp.add_trace(go.Scatter(y=rcurve_p, mode="lines",
+                line=dict(color=color_p, width=2), fill="tozeroy",
+                fillcolor=f"rgba({rgb_p},0.1)", name="実現P&L"))
+            figp.update_layout(height=220, margin=dict(l=0,r=0,t=20,b=0),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                yaxis=dict(gridcolor="#222", zerolinecolor="#444"),
+                xaxis=dict(gridcolor="#222"), font=dict(color="#aaa"))
+            st.plotly_chart(figp, use_container_width=True)
+
+        tlog_p = ps.get("trade_log", [])
+        st.markdown(f"#### 約定ログ（最新{len(tlog_p)}件）")
+        if tlog_p:
+            st.dataframe(pd.DataFrame(tlog_p[::-1]), use_container_width=True, hide_index=True)
         else:
-            st.info("状態履歴を蓄積中...")
+            st.info("まだ取引なし。プレミアムが15パーセンタイル以下になるとエントリーします。")
 
-    st.markdown("#### 状態遷移確率 Matrix (%)")
-    if transition_mx is not None:
-        st.dataframe(
-            transition_mx.style.background_gradient(cmap="YlOrRd", vmin=0, vmax=100)
-                               .format("{:.1f}%"),
-            use_container_width=True,
-        )
-        st.markdown("##### 最多遷移先")
-        tcols = st.columns(4)
-        for i, s_from in enumerate([s for s in MARKET_STATES if s != "unknown"]):
-            if s_from not in transition_mx.index: continue
-            row      = transition_mx.loc[s_from]
-            best_to  = row.idxmax(); best_pct = row.max()
-            info_f   = MARKET_STATES[s_from]
-            info_t   = MARKET_STATES.get(best_to, MARKET_STATES["unknown"])
-            with tcols[i % 4]:
-                st.markdown(
-                    f'<div class="card" style="padding:.6rem;">'
-                    f'<span style="color:{info_f["color"]};font-size:.8rem;">{info_f["label"]}</span>'
-                    f'<div style="color:#555;font-size:.7rem;margin:.2rem 0;">↓ {best_pct:.1f}%</div>'
-                    f'<span style="color:{info_t["color"]};font-size:.8rem;">{info_t["label"]}</span>'
-                    f'</div>', unsafe_allow_html=True)
-    else:
-        st.info("遷移行列の計算には十分な状態履歴が必要です（最低10状態変化）")
+        with st.expander("📖 戦略説明"):
+            st.markdown("""
+| 条件 | 内容 |
+|------|------|
+| **エントリー** | プレミアムが過去データの **15パーセンタイル以下** |
+| **利確** | プレミアムが **50パーセンタイル以上** に回帰 |
+| **SL（価格）** | BTC価格が入値から **-1.5%** 以上下落 |
+| **SL（プレミアム）** | プレミアムがさらに **-0.15%** 悪化 |
+| **タイムアウト** | **4時間**（240分）経過 |
+| **資金** | ¥30,000（グリッドBOTとは独立） |
+""")
 
-    if clf_store.get("gmm_model"):
-        with st.expander("🔬 GMM クラスター詳細"):
-            gmm   = clf_store["gmm_model"]
-            sclr  = clf_store["gmm_scaler"]
-            lmap  = clf_store["gmm_label_map"]
-            means = sclr.inverse_transform(gmm.means_)
-            feat_names = ["BTC_Z","ETH_Z","Ratio_Z","BTC_Mom5","ETH_Mom5","IV_Div_Z"]
-            rows  = [{
-                "Cluster": i, "→ State": MARKET_STATES[lmap.get(i,"unknown")]["label"],
-                "Weight%": f"{w*100:.1f}%",
-                **{feat_names[j]: f"{m[j]:.2f}" for j in range(min(len(m),len(feat_names)))}
-            } for i,(m,w) in enumerate(zip(means, gmm.weights_))]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
-# ────────────────────────────────────────────────────────────
-# TAB 4: IV-RV Spread Monitor
-# ────────────────────────────────────────────────────────────
-with tab_spread:
-    st.markdown("#### 📊 IV-RV Spread Monitor")
-    st.caption("正 = オプション割高（IVがRVより高い） · 負 = 割安")
-
-    def _s(v): return round(float(v), 2) if pd.notna(v) else 0.0
-    biv = _s(latest.get("BTC_IV")); eiv = _s(latest.get("ETH_IV"))
-    brv20 = _s(latest.get("BTC_RV20")); brv60 = _s(latest.get("BTC_RV60"))
-    erv20 = _s(latest.get("ETH_RV20")); erv60 = _s(latest.get("ETH_RV60"))
-    bsp20 = _s(latest.get("BTC_Spread20")); bsp60 = _s(latest.get("BTC_Spread60"))
-    esp20 = _s(latest.get("ETH_Spread20")); esp60 = _s(latest.get("ETH_Spread60"))
-
-    sc = st.columns(6)
-    sc[0].metric("BTC IV",  f"{biv:.1f}")
-    sc[1].metric("BTC RV20",f"{brv20:.1f}")
-    sc[2].metric("BTC RV60",f"{brv60:.1f}")
-    sc[3].metric("ETH IV",  f"{eiv:.1f}")
-    sc[4].metric("ETH RV20",f"{erv20:.1f}")
-    sc[5].metric("ETH RV60",f"{erv60:.1f}")
-
-    st.divider()
-    for sym, sp20, sp60 in [("BTC", bsp20, bsp60), ("ETH", esp20, esp60)]:
-        for period, sp in [("20", sp20), ("60", sp60)]:
-            if abs(sp) > IV_RV_ALERT:
-                d   = "RICH" if sp > 0 else "CHEAP"
-                clr = "#ff9900" if d == "RICH" else "#4b9eff"
-                st.markdown(
-                    f'<div class="spread-alert">⚠️ <b style="color:{clr}">'
-                    f'{sym} IV-RV{period} Spread = {sp:+.1f}</b> — {d}</div>',
-                    unsafe_allow_html=True)
-
-    sp1, sp2 = st.columns(2)
-    with sp1:
-        st.markdown("#### BTC IV vs RV20/RV60")
-        btc_rv = chart_idx[["BTC_IV","BTC_RV20","BTC_RV60"]].dropna()
-        if not btc_rv.empty: st.line_chart(btc_rv, height=240)
-        st.markdown("#### BTC Spread")
-        btc_sp = chart_idx[["BTC_Spread20","BTC_Spread60"]].dropna()
-        if not btc_sp.empty: st.line_chart(btc_sp, height=180)
-    with sp2:
-        st.markdown("#### ETH IV vs RV20/RV60")
-        eth_rv = chart_idx[["ETH_IV","ETH_RV20","ETH_RV60"]].dropna()
-        if not eth_rv.empty: st.line_chart(eth_rv, height=240)
-        st.markdown("#### ETH Spread")
-        eth_sp = chart_idx[["ETH_Spread20","ETH_Spread60"]].dropna()
-        if not eth_sp.empty: st.line_chart(eth_sp, height=180)
-
-    st.markdown("#### スプレッド サマリー")
-    st.dataframe(pd.DataFrame([
-        {"Symbol":"BTC","IV":biv,"RV20":brv20,"RV60":brv60,
-         "Spread20":f"{bsp20:+.2f}","Spread60":f"{bsp60:+.2f}",
-         "Status20":"RICH" if bsp20>IV_RV_ALERT else ("CHEAP" if bsp20<-IV_RV_ALERT else "NORMAL"),
-         "Status60":"RICH" if bsp60>IV_RV_ALERT else ("CHEAP" if bsp60<-IV_RV_ALERT else "NORMAL")},
-        {"Symbol":"ETH","IV":eiv,"RV20":erv20,"RV60":erv60,
-         "Spread20":f"{esp20:+.2f}","Spread60":f"{esp60:+.2f}",
-         "Status20":"RICH" if esp20>IV_RV_ALERT else ("CHEAP" if esp20<-IV_RV_ALERT else "NORMAL"),
-         "Status60":"RICH" if esp60>IV_RV_ALERT else ("CHEAP" if esp60<-IV_RV_ALERT else "NORMAL")},
-    ]), use_container_width=True)
-
-# ────────────────────────────────────────────────────────────
-# TAB 5: Strategy
-# ────────────────────────────────────────────────────────────
-with tab_strat:
-    strat_key = state_info.get("strategy")
-    if strat_key and strat_key in STRATEGIES:
-        strat = STRATEGIES[strat_key]; color = state_info["color"]
-        st.markdown(
-            f'<div class="signal-card" style="border-color:{color}55;">'
-            f'<div style="display:flex;justify-content:space-between;align-items:start;">'
-            f'<div><div class="label">現在の推奨戦略</div>'
-            f'<div style="font-size:1.1rem;font-weight:700;color:{color}">{strat["name"]}</div></div>'
-            f'<span class="state-pill" style="background:{color}22;color:{color};'
-            f'border:1px solid {color}44;font-size:.85rem">{strat["action"]}</span></div>'
-            f'<div style="margin-top:.7rem;display:grid;grid-template-columns:1fr 1fr;gap:.5rem;">'
-            f'<div><div class="label">Legs</div>'
-            f'<div style="color:#c8cad4;font-size:.85rem">{" · ".join(strat["legs"])}</div></div>'
-            f'<div><div class="label">Target / Stop</div>'
-            f'<span class="tag green">TP +{strat["target_pnl_pct"]*100:.0f}%</span>'
-            f'<span class="tag red">SL {strat["stop_pnl_pct"]*100:.0f}%</span></div>'
-            f'<div style="grid-column:span 2"><div class="label">Rationale</div>'
-            f'<div style="color:#a0a8b8;font-size:.82rem">{strat["rationale"]}</div></div>'
-            f'<div style="grid-column:span 2"><div class="label">Risk</div>'
-            f'<div style="color:#886060;font-size:.82rem">{strat["risk"]}</div></div>'
-            f'</div></div>', unsafe_allow_html=True)
-    else:
-        st.info("現在、明確な戦略シグナルはありません。")
-
-    st.markdown("#### 全戦略マップ")
-    for sk, sv in STRATEGIES.items():
-        sf  = [k for k,v in MARKET_STATES.items() if v.get("strategy")==sk]
-        sc  = MARKET_STATES[sf[0]]["color"] if sf else "#888"
-        bd  = f"border:1px solid {sc}88;" if sk == strat_key else ""
-        st.markdown(
-            f'<div class="card" style="{bd}margin-bottom:.3rem;">'
-            f'<div style="display:flex;justify-content:space-between;">'
-            f'<b style="color:{sc}">{sv["name"]}</b>'
-            f'<span class="tag" style="background:{sc}22;color:{sc}">{sv["action"]}</span></div>'
-            f'<div style="font-size:.78rem;color:#888;margin-top:.3rem">{sv["rationale"]}</div>'
-            f'</div>', unsafe_allow_html=True)
-
-    # IVスキュー分析
-    st.markdown("#### 📐 IVスキュー分析")
-    try:
-        from strategy.skew import get_skew_data
-        skew_data = get_skew_data("BTC")
-        if skew_data:
-            sk = st.columns(5)
-            sk[0].metric("ATM IV",        f"{skew_data['atm_iv']:.1f}")
-            sk[1].metric("OTM Call IV",   f"{skew_data['otm_call_iv']:.1f}")
-            sk[2].metric("OTM Put IV",    f"{skew_data['otm_put_iv']:.1f}")
-            rr = skew_data['risk_reversal']
-            sk[3].metric("Risk Reversal", f"{rr:+.2f}",
-                        delta="上昇期待 🟢" if rr > 0 else "下落警戒 🔴")
-            bf = skew_data['butterfly']
-            sk[4].metric("Butterfly",     f"{bf:+.2f}",
-                        delta="テール需要高 ⚠️" if bf > 2 else "通常")
-            st.caption(f"限月: {skew_data.get('expiry','?')} · Spot: ${skew_data.get('spot',0):,.0f}")
-        else:
-            st.info("スキューデータ取得中...")
-    except Exception as e:
-        st.warning(f"スキュー取得エラー: {e}")
-
-    if not signal_history_df.empty:
-        st.markdown("#### 📋 シグナル履歴")
-        st.dataframe(signal_history_df.tail(50)[::-1], use_container_width=True, height=260)
-
-# ────────────────────────────────────────────────────────────
-# TAB 6: Paper Trading
-# ────────────────────────────────────────────────────────────
-with tab_paper:
-    cap_pct = (port_store["capital"] - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
-    m = st.columns(4)
-    m[0].metric("元本",       f"${INITIAL_CAPITAL:,.0f}")
-    m[1].metric("現在の資産", f"${port_store['capital']:,.0f}", delta=f"{cap_pct:+.1f}%")
-    m[2].metric("総トレード", stats["total_trades"])
-    m[3].metric("勝率",       f"{stats['win_rate']}%")
-    m2 = st.columns(5)
-    m2[0].metric("累計P&L",    f"${stats['total_pnl_usd']:+,.2f}")
-    m2[1].metric("平均P&L%",   f"{stats['avg_pnl_pct']:+.2f}%")
-    m2[2].metric("Sharpe",     f"{stats['sharpe']:.2f}")
-    m2[3].metric("Max DD",     f"{stats['max_drawdown']:.1f}%")
-    m2[4].metric("Profit Factor", f"{stats['profit_factor']:.2f}")
-
-    st.divider()
-    st.markdown(f"#### 🔓 オープンポジション ({len(port_store['positions'])} / {MAX_POSITIONS})")
-    if not port_store["positions"]:
-        st.info("現在、オープンポジションはありません。")
-    else:
-        for pos in port_store["positions"]:
-            si   = MARKET_STATES.get(pos["state"], MARKET_STATES["unknown"])
-            pa, pb = st.columns([3, 1])
-            with pa:
-                st.markdown(position_card(pos, si), unsafe_allow_html=True)
-            with pb:
-                if st.button("手動決済", key=f"cls_{pos['id']}"):
-                    close_manually(pos, port_store, df)
-                    st.rerun()
-
-    st.divider()
-    st.markdown(f"#### 📋 決済済みトレード ({len(port_store['closed_trades'])} 件)")
-    if port_store["closed_trades"]:
-        rows = [{
-            "ID": t["id"], "戦略": t["strategy_name"],
-            "状態": MARKET_STATES.get(t["state"],{}).get("label","?"),
-            "エントリー": t["entry_time"], "決済": t.get("exit_time","—"),
-            "P&L%": f'{t.get("current_pnl_pct",0)*100:+.2f}%',
-            "P&L$": f'${t["current_pnl_usd"]:+.2f}',
-            "手数料$": f'${t.get("cost_usd",0):.3f}',
-            "終了": t.get("status","?"),
-        } for t in reversed(port_store["closed_trades"])]
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, height=260)
-
-        eq = equity_curve(port_store)
-        st.markdown("#### Equity Curve")
-        st.line_chart(pd.DataFrame({"Equity": eq}), color="#00c896", height=200)
-    else:
-        st.info("まだ決済済みトレードはありません。")
-
-# ────────────────────────────────────────────────────────────
-# TAB 7: Research Dashboard
-# ────────────────────────────────────────────────────────────
-with tab_res:
-    st.markdown("### 🔬 Volatility Research Dashboard")
-    st.caption("研究者向け統計分析 · 分布 · 相関 · ローリング統計")
-
-    btc_s = df["BTC_IV"].dropna()
-    eth_s = df["ETH_IV"].dropna()
-    rat_s = df["BTC_ETH_Ratio"].dropna()
-
-    st.markdown("#### 記述統計")
-    st.dataframe(
-        pd.DataFrame({"BTC IV": btc_s.describe(), "ETH IV": eth_s.describe(), "Ratio": rat_s.describe()}).round(4),
-        use_container_width=True,
-    )
-    st.divider()
-
-    r1, r2, r3 = st.columns(3)
-    with r1:
-        st.markdown("#### BTC IV 分布")
-        if len(btc_s) >= 5:
-            vals, bins = np.histogram(btc_s, bins=30)
-            centers = (bins[:-1]+bins[1:])/2
-            st.bar_chart(pd.DataFrame({"BTC_IV":vals}, index=centers.round(1)), color="#f7931a", height=220)
-    with r2:
-        st.markdown("#### ETH IV 分布")
-        if len(eth_s) >= 5:
-            vals, bins = np.histogram(eth_s, bins=30)
-            centers = (bins[:-1]+bins[1:])/2
-            st.bar_chart(pd.DataFrame({"ETH_IV":vals}, index=centers.round(1)), color="#627eea", height=220)
-    with r3:
-        st.markdown("#### Ratio 分布")
-        if len(rat_s) >= 5:
-            vals, bins = np.histogram(rat_s, bins=30)
-            centers = (bins[:-1]+bins[1:])/2
-            st.bar_chart(pd.DataFrame({"Ratio":vals}, index=centers.round(4)), color="#ffd700", height=220)
-
-    st.divider()
-    st.markdown("#### Correlation Matrix")
-    corr_cols = [c for c in ["BTC_IV","ETH_IV","BTC_ETH_Ratio","BTC_Z","ETH_Z","Ratio_Z","BTC_RV10","ETH_RV10"] if c in df.columns]
-    if len(corr_cols) >= 3:
-        corr_df = df[corr_cols].dropna().corr().round(3)
-        def _color(v):
-            if v >= 0.7:  return "background-color:#00c89644"
-            if v >= 0.3:  return "background-color:#00c89622"
-            if v <= -0.7: return "background-color:#ff4b4b44"
-            if v <= -0.3: return "background-color:#ff4b4b22"
-            return ""
-        st.dataframe(corr_df.style.map(_color), use_container_width=True)
-
-    st.divider()
-    st.markdown("#### Rolling Correlation (BTC IV ↔ ETH IV)")
-    rc_data = {}
-    for w in [20, 60]:
-        rc_data[f"RollCorr_{w}"] = df["BTC_IV"].rolling(w).corr(df["ETH_IV"])
-    rc_df = pd.DataFrame(rc_data, index=df["Timestamp"]).dropna()
-    if not rc_df.empty:
-        st.line_chart(rc_df, height=200)
-
-    # 4資産IV比較
-    st.divider()
-    st.markdown("#### 4資産 IV 比較")
-    multi_iv_cols = [c for c in ["BTC_IV","ETH_IV","SOL_IV","BNB_IV"] if c in chart_idx.columns]
-    multi_iv_data = chart_idx[multi_iv_cols].apply(pd.to_numeric, errors="coerce").dropna(how="all")
-    multi_iv_data = multi_iv_data.dropna(axis=1, how="all")
-    if not multi_iv_data.empty and len(multi_iv_data.columns) >= 2:
-        st.line_chart(multi_iv_data, height=220)
-    elif not multi_iv_data.empty and len(multi_iv_data.columns) == 1:
-        st.line_chart(multi_iv_data, height=220)
-
-    # 相関マトリクス（4資産）
-    corr_cols2 = [c for c in ["BTC_IV","ETH_IV","SOL_IV","BNB_IV"] if c in df.columns]
-    if len(corr_cols2) >= 2:
-        st.markdown("#### 4資産 IV 相関")
-        corr2_df = df[corr_cols2].apply(pd.to_numeric, errors="coerce").dropna()
-        corr2 = corr2_df.corr().round(3)
-        def _color2(v):
-            if v >= 0.7:  return "background-color:#00c89644"
-            if v >= 0.3:  return "background-color:#00c89622"
-            if v <= -0.7: return "background-color:#ff4b4b44"
-            if v <= -0.3: return "background-color:#ff4b4b22"
-            return ""
-        st.dataframe(corr2.style.map(_color2), use_container_width=True)
-
-    st.markdown("#### IVパーセンタイル分析")
-    qs = [0.05,0.10,0.25,0.50,0.75,0.90,0.95]
-    q_rows = [{"Pct":f"{int(q*100)}th",
-               "BTC IV":round(btc_s.quantile(q),2) if len(btc_s)>5 else np.nan,
-               "ETH IV":round(eth_s.quantile(q),2) if len(eth_s)>5 else np.nan,
-               "Ratio": round(rat_s.quantile(q),4) if len(rat_s)>5 else np.nan}
-              for q in qs]
-    st.dataframe(pd.DataFrame(q_rows), use_container_width=True)
-
-# ────────────────────────────────────────────────────────────
-# TAB 8: Backtest
-# ────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════
+#  TAB 3: バックテスト
+# ════════════════════════════════════════════════════════════
 with tab_bt:
-    st.markdown("### ⏮️ Backtest Engine")
-    st.caption("シグナル発生後 1h / 6h / 24h のIV変化からP&Lを推計")
+    st.markdown("## 🔬 PMR バックテスト")
+    st.caption("過去データで複数の設定を一括シミュレーション")
 
-    if signal_history_df.empty:
-        st.info("シグナル履歴が蓄積されると自動的に分析されます。（最低10件）")
-    else:
-        st.success(f"✅ {len(signal_history_df)} 件のシグナルでバックテスト実行")
-        bt_results = run_backtest(df, signal_history_df)
+    @st.cache_resource
+    def get_iv_sheet():
+        try:
+            creds = Credentials.from_service_account_info(
+                st.secrets["gcp_service_account"], scopes=SCOPES)
+            gc = gspread.authorize(creds)
+            sh = gc.open_by_key(SHEET_ID)
+            return sh.worksheet("iv_data")
+        except:
+            return None
 
-        if not bt_results:
-            st.warning("バックテスト結果を計算できませんでした。データが不十分な可能性があります。")
+    @st.cache_data(ttl=3600)
+    def load_iv_data():
+        ws_iv = get_iv_sheet()
+        if ws_iv is None:
+            return None
+        try:
+            # 全件取得（行数上限を避けるためrange指定）
+            total = ws_iv.row_count
+            rows = ws_iv.get(f"A1:Z{min(total, 50000)}")
+            if len(rows) < 2:
+                return None
+            df = pd.DataFrame(rows[1:], columns=rows[0])
+            df["BTC_IV"] = pd.to_numeric(df["BTC_IV"], errors="coerce")
+            df["BTC_Spot"] = pd.to_numeric(df["BTC_Spot"], errors="coerce")
+            # 0や欠損を除外
+            df = df.dropna(subset=["BTC_IV", "BTC_Spot"])
+            df = df[df["BTC_Spot"] > 100_000]  # BTC価格が異常な行を除外
+            df = df[df["BTC_IV"].abs() < 10]    # プレミアムが±10%超は異常値
+            df = df.reset_index(drop=True)
+            return df
+        except Exception as e:
+            return None
+
+    def run_pmr_backtest(df, entry_pct, exit_pct, stop_loss_pct, stop_prem_delta, timeout_bars, capital=30000):
+        """PMRロジックをヒストリカルデータでシミュレーション"""
+        prems = df["BTC_IV"].values
+        prices = df["BTC_Spot"].values
+        n = len(prems)
+        min_samples = 100
+
+        trades = []
+        position = None
+
+        for i in range(min_samples, n):
+            hist = prems[max(0, i-500):i]
+            cur_prem = prems[i]
+            cur_price = prices[i]
+            # 異常値スキップ（price=0やNaN）
+            if cur_price <= 100_000 or np.isnan(cur_price) or np.isnan(cur_prem):
+                continue
+            pct = float((hist < cur_prem).mean() * 100)
+
+            if position is None:
+                if pct <= entry_pct:
+                    position = {
+                        "entry_idx": i, "entry_price": cur_price,
+                        "entry_prem": cur_prem, "entry_pct": round(pct, 1),
+                    }
+            else:
+                bars_held = i - position["entry_idx"]
+                pnl_pct = (cur_price - position["entry_price"]) / position["entry_price"]
+                reason = None
+                if pct >= exit_pct:
+                    reason = "TP"
+                elif pnl_pct <= stop_loss_pct:
+                    reason = "SL_PRICE"
+                elif cur_prem <= position["entry_prem"] + stop_prem_delta:
+                    reason = "SL_PREM"
+                elif bars_held >= timeout_bars:
+                    reason = "TIMEOUT"
+
+                if reason:
+                    pnl = round(capital * pnl_pct, 1)
+                    trades.append({
+                        "理由": reason,
+                        "入りpct": position["entry_pct"],
+                        "出りpct": round(pct, 1),
+                        "保有(分)": bars_held,
+                        "P&L(¥)": pnl,
+                        "勝ち": pnl > 0,
+                    })
+                    position = None
+
+        if not trades:
+            return None
+        df_t = pd.DataFrame(trades)
+        n_t = len(df_t)
+        win_rate = df_t["勝ち"].mean() * 100
+        total_pnl = df_t["P&L(¥)"].sum()
+        avg_hold = df_t["保有(分)"].mean()
+        wins = df_t[df_t["勝ち"]]["P&L(¥)"].sum()
+        losses = abs(df_t[~df_t["勝ち"]]["P&L(¥)"].sum())
+        pf = wins / losses if losses > 0 else 99.0
+        return {
+            "取引数": n_t, "勝率(%)": round(win_rate, 1),
+            "総P&L(¥)": round(total_pnl, 1),
+            "PF": round(pf, 2),
+            "平均保有(分)": round(avg_hold, 1),
+            "trades": df_t,
+        }
+
+    if st.button("📊 バックテスト実行", type="primary"):
+        with st.spinner("iv_dataを読み込み中..."):
+            df_iv = load_iv_data()
+
+        if df_iv is None:
+            st.error("iv_dataの読み込みに失敗しました")
         else:
-            st.markdown("#### 戦略別パフォーマンスランキング (Sharpe降順)")
-            rank_rows = []
-            for sname, rdf in bt_results.items():
-                for horizon, row in rdf.iterrows():
-                    rank_rows.append({"Strategy":sname,"Horizon":horizon,
-                                      "WinRate%":row.get("WinRate%",0),
-                                      "AvgRet%":row.get("AvgRet%",0),
-                                      "Sharpe":row.get("Sharpe",0),
-                                      "MaxDD%":row.get("MaxDD%",0),
-                                      "N":int(row.get("N",0))})
-            if rank_rows:
-                rank_df = pd.DataFrame(rank_rows).sort_values("Sharpe", ascending=False)
-                def _rc(v):
-                    if v > 0: return "color:#00c896"
-                    if v < 0: return "color:#ff4b4b"
+            hours = len(df_iv) / 60
+            st.success(f"✅ {len(df_iv):,}件のデータ（約{hours:.1f}時間分）でシミュレーション")
+
+            # 複数設定を一括テスト
+            configs = [
+                {"entry": 10, "exit": 50, "label": "10/50 (厳しめエントリー)"},
+                {"entry": 15, "exit": 50, "label": "15/50 (現在の設定)"},
+                {"entry": 20, "exit": 50, "label": "20/50 (緩めエントリー)"},
+                {"entry": 15, "exit": 40, "label": "15/40 (早めエグジット)"},
+                {"entry": 15, "exit": 60, "label": "15/60 (遅めエグジット)"},
+                {"entry": 10, "exit": 40, "label": "10/40"},
+                {"entry": 20, "exit": 60, "label": "20/60"},
+            ]
+
+            results = []
+            for cfg in configs:
+                r = run_pmr_backtest(
+                    df_iv, cfg["entry"], cfg["exit"],
+                    stop_loss_pct=-0.015, stop_prem_delta=-0.15, timeout_bars=240
+                )
+                if r:
+                    results.append({
+                        "設定": cfg["label"],
+                        "取引数": r["取引数"],
+                        "勝率(%)": r["勝率(%)"],
+                        "総P&L(¥)": r["総P&L(¥)"],
+                        "PF": r["PF"],
+                        "平均保有(分)": r["平均保有(分)"],
+                    })
+
+            if results:
+                st.markdown("#### 設定別パフォーマンス比較")
+                df_res = pd.DataFrame(results).sort_values("総P&L(¥)", ascending=False)
+
+                def color_pnl(v):
+                    if isinstance(v, (int, float)):
+                        return "color:#00c896" if v > 0 else "color:#ff4b4b"
                     return ""
+
                 st.dataframe(
-                    rank_df.style.map(_rc, subset=["AvgRet%","Sharpe"]),
-                    use_container_width=True, height=280,
+                    df_res.style.map(color_pnl, subset=["総P&L(¥)"]),
+                    use_container_width=True, hide_index=True
                 )
 
-            for sname, rdf in bt_results.items():
-                with st.expander(f"📊 {sname}"):
-                    st.dataframe(rdf, use_container_width=True)
+                # 最良設定のP&L推移
+                best_label = df_res.iloc[0]["設定"]
+                best_cfg = next((c for c in configs if c["label"] == best_label), configs[1])
+                best_r = run_pmr_backtest(
+                    df_iv, best_cfg["entry"], best_cfg["exit"],
+                    stop_loss_pct=-0.015, stop_prem_delta=-0.15, timeout_bars=240
+                )
+                if best_r:
+                    st.markdown(f"#### 最良設定「{df_res.iloc[0]['設定']}」のP&L推移")
+                    cumsum = best_r["trades"]["P&L(¥)"].cumsum().tolist()
+                    color = "#00c896" if cumsum[-1] >= 0 else "#ff4b4b"
+                    rgb = ",".join(str(int(color.lstrip("#")[i:i+2], 16)) for i in (0,2,4))
+                    fig_bt = go.Figure()
+                    fig_bt.add_trace(go.Scatter(
+                        y=cumsum, mode="lines",
+                        line=dict(color=color, width=2),
+                        fill="tozeroy", fillcolor=f"rgba({rgb},0.1)",
+                        name="累積P&L"
+                    ))
+                    fig_bt.update_layout(
+                        height=250, margin=dict(l=0,r=0,t=20,b=0),
+                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        yaxis=dict(gridcolor="#222", zerolinecolor="#444"),
+                        xaxis=dict(gridcolor="#222", title="取引番号"),
+                        font=dict(color="#aaa")
+                    )
+                    st.plotly_chart(fig_bt, use_container_width=True)
 
-        st.markdown("#### シグナル履歴テーブル")
-        st.dataframe(signal_history_df[::-1], use_container_width=True, height=260)
+                    # 理由別集計
+                    reason_summary = best_r["trades"].groupby("理由")["P&L(¥)"].agg(["count","sum"]).rename(columns={"count":"件数","sum":"合計P&L(¥)"})
+                    reason_summary["合計P&L(¥)"] = reason_summary["合計P&L(¥)"].round(1)
+                    st.markdown("**クローズ理由の内訳**")
+                    st.dataframe(reason_summary, use_container_width=True)
 
-        # 教師あり学習
-        st.markdown("#### 🤖 教師あり学習（自動ラベリング）")
-        try:
-            from strategy.labeler import label_signals, train_simple_classifier
-            labeled_df = label_signals(df, signal_history_df)
-            if labeled_df.empty:
-                st.info("ラベル付けにはシグナル発生後1時間以上のデータが必要です。")
-            else:
-                st.success(f"✅ {len(labeled_df)} 件のラベル付きデータ")
-                win_rate = labeled_df["Label_1h"].mean() * 100
-                st.metric("予測正解率", f"{win_rate:.1f}%")
-                st.dataframe(labeled_df[::-1], use_container_width=True, height=200)
+                    with st.expander("📋 全取引ログ"):
+                        st.dataframe(best_r["trades"], use_container_width=True, hide_index=True)
+    else:
+        st.info("「バックテスト実行」ボタンを押すと過去4,000件以上のデータで設定を比較します。")
 
-                clf, msg = train_simple_classifier(labeled_df)
-                if clf:
-                    st.success(f"🎯 RandomForest学習完了 · {msg}")
-                    importances = clf.feature_importances_
-                    st.markdown(f"特徴量重要度: Confidence={importances[0]:.2f} / OppScore={importances[1]:.2f}")
-                else:
-                    st.info(msg)
-        except Exception as e:
-            st.warning(f"教師あり学習エラー: {e}")
 
-# ────────────────────────────────────────────────────────────
-# TAB 9: Data & System
-# ────────────────────────────────────────────────────────────
-with tab_data:
-    st.markdown("#### 🗄️ データ & システム")
-    d1, d2 = st.columns(2)
+# ════════════════════════════════════════════════════════════
+#  TAB 4: Paper Trading
+# ════════════════════════════════════════════════════════════
+with tab_paper:
+    pt  = live_state.get("paper_trading", {})
+    st_ = pt.get("stats", {})
 
-    with d1:
-        st.markdown("##### IV Data")
-        if sheet_ok:
-            st.success(f"✅ {len(df)} 行蓄積済み")
-            st.markdown(f"[📊 スプレッドシートを開く](https://docs.google.com/spreadsheets/d/{SHEET_ID})")
-        else:
-            st.warning("CSV モード動作中")
-        st.dataframe(df.tail(40)[::-1], use_container_width=True, height=260)
-        st.download_button("⬇️ IV Data CSV",
-                           df.to_csv(index=False).encode("utf-8"),
-                           f"iv_data_{datetime.now():%Y%m%d_%H%M}.csv", "text/csv")
+    st.markdown("## 💼 ペーパートレード")
+    st.caption(f"VM最終更新: {updated_at}")
 
-    with d2:
-        st.markdown("##### Signal History")
-        if signals_ok:
-            st.success(f"✅ signal_history · {len(signal_history_df)} 件")
-        if not signal_history_df.empty:
-            st.dataframe(signal_history_df[::-1], use_container_width=True, height=260)
-            st.download_button("⬇️ Signal CSV",
-                               signal_history_df.to_csv(index=False).encode("utf-8"),
-                               f"signals_{datetime.now():%Y%m%d_%H%M}.csv", "text/csv")
-        else:
-            st.info("シグナルはまだありません。")
+    cap      = pt.get("capital", 10000)
+    cap_init = 10000
+    cap_pct  = (cap - cap_init) / cap_init * 100
 
-    with st.expander("🔬 データ品質詳細"):
-        dq_s2, dq_st2 = dq_score(dq_store)
-        qc = st.columns(4)
-        qc[0].metric("品質スコア",  f"{dq_s2}/100")
-        qc[1].metric("API呼び出し", dq_store["api_calls"])
-        qc[2].metric("API失敗",     dq_store["api_failures"])
-        qc[3].metric("欠損行",      dq_store["missing_count"])
-        st.progress(dq_s2/100, text=f"System Health: {dq_st2}")
-        miss_r = dq_store["missing_count"] / max(dq_store["total_rows"], 1) * 100
-        fail_r = dq_store["api_failures"]  / max(dq_store["api_calls"],  1) * 100
-        st.caption(f"欠損率: {miss_r:.1f}% | API失敗率: {fail_r:.1f}% | "
-                   f"最終成功: {dq_store['last_success'].strftime('%Y-%m-%d %H:%M:%S') if dq_store['last_success'] else 'N/A'}")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("元本",     f"${cap_init:,.0f}")
+    m2.metric("現在資産", f"${cap:,.2f}", delta=f"{cap_pct:+.1f}%")
+    m3.metric("取引回数", st_.get("total_trades", 0))
+    m4.metric("勝率",     f"{st_.get('win_rate',0)}%")
+    m5.metric("累計P&L",  f"${st_.get('total_pnl_usd',0):+,.2f}")
 
-    with st.expander("🗂️ 生データ (最新200件)"):
-        st.dataframe(df.tail(200)[::-1], use_container_width=True, height=280)
+    st.divider()
+    positions = pt.get("positions", [])
+    st.markdown(f"#### オープンポジション ({len(positions)}件)")
+    if positions:
+        for pos in positions:
+            pnl_pct = pos.get("current_pnl_pct", 0) * 100
+            icon = "🟢" if pnl_pct >= 0 else "🔴"
+            st.markdown(
+                f'<div class="pos-card">{icon} <b>{pos.get("strategy_name","?")}</b> | '
+                f'状態: {pos.get("state","?")} | エントリー: {pos.get("entry_time","?")} | '
+                f'P&L: <b>${pos.get("current_pnl_usd",0):+.2f}</b> ({pnl_pct:+.2f}%)</div>',
+                unsafe_allow_html=True)
+    else:
+        st.info("オープンポジションなし")
 
-    with st.expander("🚀 Future Trading Layer (設計のみ・未接続)"):
-        st.json(trading_if.status())
-        st.markdown("""
-**リアル取引移行手順:**
-1. Deribit APIキー取得（read + trade権限）
-2. `.streamlit/secrets.toml` に `DERIBIT_API_KEY` / `DERIBIT_API_SECRET` を追加
-3. `execution/trading_interface.py` の `DeribitLiveTradingEngine` を実装
-4. `paper_trade/engine.py` の `open_trade()` → `place_order()` に差し替え
-        """)
+    closed = pt.get("closed_trades", [])
+    if closed:
+        st.markdown(f"#### 決済済みトレード ({len(closed)}件)")
+        rows = [{"戦略": t.get("strategy_name","?"), "状態": t.get("state","?"),
+                 "エントリー": t.get("entry_time","?"), "決済": t.get("exit_time","—"),
+                 "P&L%": f'{t.get("current_pnl_pct",0)*100:+.2f}%',
+                 "P&L$": f'${t.get("current_pnl_usd",0):+.2f}',
+                 "終了": t.get("status","?")} for t in reversed(closed)]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-    with st.expander("📐 アーキテクチャ概要"):
-        st.markdown("""
-```
-crypto_vol_platform_v3/
-├── app.py
-├── requirements.txt
-├── config/settings.py
-├── data/collector.py
-├── data/features.py
-├── strategy/classifier.py
-├── strategy/signals.py
-├── paper_trade/engine.py
-├── backtest/engine.py
-├── execution/alerts.py
-├── execution/trading_interface.py
-└── ui/styles.py
-```
-        """)
+
+# ════════════════════════════════════════════════════════════
+#  TAB 4: Market State
+# ════════════════════════════════════════════════════════════
+with tab_state:
+    st.markdown("## 🧠 市場状態")
+    st.caption(f"VM最終更新: {updated_at}")
+
+    ms2 = live_state.get("market_state", {})
+    sk2 = ms2.get("state", "unknown")
+    si2 = MARKET_STATES.get(sk2, MARKET_STATES["unknown"])
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("現在状態",   si2["label"])
+    m2.metric("Confidence", f"{ms2.get('confidence',0)*100:.1f}%")
+    m3.metric("Opp Score",  f"{ms2.get('opp_score',0)}/100")
+    m4.metric("手法",       ms2.get("method", "—"))
+
+    reasons = ms2.get("opp_reasons", [])
+    if reasons:
+        st.info("機会理由: " + " / ".join(reasons))
+
+    history = ms2.get("state_history", [])
+    if history:
+        st.markdown("#### 状態遷移履歴")
+        prev = None
+        for row in reversed(history):
+            cur = row.get("state", "unknown")
+            if cur == prev:
+                continue
+            prev = cur
+            si_ = MARKET_STATES.get(cur, MARKET_STATES["unknown"])
+            c   = si_["color"]
+            st.markdown(
+                f'<div style="display:flex;gap:12px;padding:5px 0;border-bottom:1px solid #222;">'
+                f'<span style="color:#555;font-size:.78rem;min-width:130px">{row.get("timestamp","?")}</span>'
+                f'<span class="badge" style="background:{c}22;color:{c};border:1px solid {c}44">{si_["label"]}</span>'
+                f'<span style="color:#666;font-size:.78rem">{row.get("confidence",0)*100:.0f}% · {row.get("method","?")}</span>'
+                f'</div>', unsafe_allow_html=True)
+
+
+# ════════════════════════════════════════════════════════════
+#  TAB 5: System
+# ════════════════════════════════════════════════════════════
+with tab_sys:
+    st.markdown("## 🗄️ システム")
+    st.metric("VM最終更新", updated_at or "—")
+    st.markdown(f"[📊 スプレッドシートを開く](https://docs.google.com/spreadsheets/d/{SHEET_ID})")
+    ms3 = live_state.get("market_state", {})
+    st.markdown(f"""
+| 項目 | 値 |
+|------|-----|
+| データ数 | {ms3.get('n_samples',0):,} |
+| GMM | {"稼働中" if ms3.get("gmm_active") else "学習中"} |
+| 現在状態 | {ms3.get("state","?")} |
+| Confidence | {ms3.get("confidence",0)*100:.1f}% |
+""")
+    with st.expander("🔍 生データ (live_state JSON)"):
+        st.json(live_state)
+
 
 # ══════════════════════════════════════════════════════════════
 #  AUTO REFRESH
 # ══════════════════════════════════════════════════════════════
-# データを直接取得
-try:
-    from data.collector import _get_dvol, _get_spot, _ensure_csv, _CSV_COLS, sheet_append
-    import pandas as pd
-    from datetime import datetime
-    _dq = {"api_calls": 0, "api_failures": 0}
-    _btc_iv = _get_dvol("btc", _dq)
-    _eth_iv = _get_dvol("eth", _dq)
-    _btc_sp = _get_spot("btc", _dq)
-    _eth_sp = _get_spot("eth", _dq)
-    if _btc_iv and _eth_iv:
-        _ts    = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        _ratio = round(_btc_iv / _eth_iv, 6)
-        _row   = [_ts, round(_btc_iv,4), round(_eth_iv,4), _ratio,
-                  round(_btc_sp,2) if _btc_sp else "",
-                  round(_eth_sp,2) if _eth_sp else "",
-                  "", "", "", "", "", "", "", ""]
-        _ensure_csv()
-        pd.DataFrame([_row], columns=_CSV_COLS).to_csv(
-            "iv_data.csv", mode="a", header=False, index=False)
-        sheet_append(ws_iv, _row)
-except Exception:
-    pass
-
 time.sleep(60)
 st.rerun()

@@ -7,3 +7,4 @@ gspread
 google-auth
 google-auth-oauthlib
 matplotlib
+plotly>=5.0.0

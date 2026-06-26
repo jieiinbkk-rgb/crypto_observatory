@@ -323,7 +323,7 @@ with tab_bt:
         except Exception as e:
             return None
 
-    def run_pmr_backtest(df, entry_pct, exit_pct, stop_loss_pct, stop_prem_delta, timeout_bars, capital=30000):
+    def run_pmr_backtest(df, entry_pct, exit_pct, stop_loss_pct, stop_prem_delta, timeout_bars, capital=30000, tp_min_pnl=None):
         """PMRロジックをヒストリカルデータでシミュレーション"""
         prems = df["BTC_IV"].values
         prices = df["BTC_Spot"].values
@@ -353,7 +353,8 @@ with tab_bt:
                 pnl_pct = (cur_price - position["entry_price"]) / position["entry_price"]
                 reason = None
                 if pct >= exit_pct:
-                    reason = "TP"
+                    if tp_min_pnl is None or pnl_pct >= tp_min_pnl:
+                        reason = "TP"
                 elif pnl_pct <= stop_loss_pct:
                     reason = "SL_PRICE"
                 elif cur_prem <= position["entry_prem"] + stop_prem_delta:
@@ -403,20 +404,24 @@ with tab_bt:
 
             # 複数設定を一括テスト
             configs = [
-                {"entry": 10, "exit": 50, "label": "10/50 (厳しめエントリー)"},
-                {"entry": 15, "exit": 50, "label": "15/50 (現在の設定)"},
-                {"entry": 20, "exit": 50, "label": "20/50 (緩めエントリー)"},
-                {"entry": 15, "exit": 40, "label": "15/40 (早めエグジット)"},
-                {"entry": 15, "exit": 60, "label": "15/60 (遅めエグジット)"},
-                {"entry": 10, "exit": 40, "label": "10/40"},
-                {"entry": 20, "exit": 60, "label": "20/60"},
+                {"entry": 15, "exit": 50, "label": "15/50 (現在の設定)", "tp_min_pnl": None},
+                {"entry": 20, "exit": 50, "label": "20/50 (緩めエントリー)", "tp_min_pnl": None},
+                {"entry": 20, "exit": 60, "label": "20/60", "tp_min_pnl": None},
+                {"entry": 15, "exit": 50, "label": "15/50 + TP条件(-0.2%)", "tp_min_pnl": -0.002},
+                {"entry": 20, "exit": 50, "label": "20/50 + TP条件(-0.2%)", "tp_min_pnl": -0.002},
+                {"entry": 20, "exit": 50, "label": "20/50 + TP条件(-0.1%)", "tp_min_pnl": -0.001},
+                {"entry": 15, "exit": 50, "label": "15/50 + TP条件(-0.1%)", "tp_min_pnl": -0.001},
+                {"entry": 10, "exit": 50, "label": "10/50 (厳しめエントリー)", "tp_min_pnl": None},
+                {"entry": 15, "exit": 40, "label": "15/40 (早めエグジット)", "tp_min_pnl": None},
+                {"entry": 10, "exit": 40, "label": "10/40", "tp_min_pnl": None},
             ]
 
             results = []
             for cfg in configs:
                 r = run_pmr_backtest(
                     df_iv, cfg["entry"], cfg["exit"],
-                    stop_loss_pct=-0.015, stop_prem_delta=-0.15, timeout_bars=240
+                    stop_loss_pct=-0.015, stop_prem_delta=-0.15, timeout_bars=240,
+                    tp_min_pnl=cfg.get("tp_min_pnl")
                 )
                 if r:
                     results.append({
@@ -447,7 +452,8 @@ with tab_bt:
                 best_cfg = next((c for c in configs if c["label"] == best_label), configs[1])
                 best_r = run_pmr_backtest(
                     df_iv, best_cfg["entry"], best_cfg["exit"],
-                    stop_loss_pct=-0.015, stop_prem_delta=-0.15, timeout_bars=240
+                    stop_loss_pct=-0.015, stop_prem_delta=-0.15, timeout_bars=240,
+                    tp_min_pnl=cfg.get("tp_min_pnl")
                 )
                 if best_r:
                     st.markdown(f"#### 最良設定「{df_res.iloc[0]['設定']}」のP&L推移")

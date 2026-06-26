@@ -136,11 +136,11 @@ with tab_grid:
     g2.metric("実現P&L",  f"¥{gs.get('realized_pnl', 0):+.1f}")
     g3.metric("総資産",   f"¥{gs.get('equity', 30000):,.1f}", delta=f"{gs.get('equity_pct',0):+.3f}%")
     g4.metric("状態",     status_label)
-    g5.metric("取引回数", gb.get("total_trades", 0))
+    g5.metric("取引回数", gs.get("total_trades", 0))
     g6.metric("最大DD",   f"{gs.get('max_drawdown',0):.2f}%")
 
     g7, g8, g9, g10 = st.columns(4)
-    n_trades = gb.get("total_trades", 0)
+    n_trades = gs.get("total_trades", 0)
     g7.metric("勝率",     f"{gs.get('win_rate',0):.1f}%" if n_trades > 0 else "—")
     g8.metric("PF",       f"{gs.get('profit_factor',0):.2f}" if gs.get("profit_factor") else "—")
     g9.metric("平均保有", f"{gs.get('avg_hold_min',0):.1f}分")

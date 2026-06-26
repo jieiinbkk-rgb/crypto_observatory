@@ -229,7 +229,9 @@ with tab_pmr:
         p7.metric("平均保有", f"{ps.get('avg_hold_min',0):.1f}分")
         has_pos  = ps.get("has_position", False)
         pos_data = ps.get("position")
+        cur_pct  = ps.get("current_pct")
         p8.metric("ポジション", "保有中 🟢" if has_pos else "待機中 ⚪")
+        p9.metric("現在%tile", f"{cur_pct:.1f}" if cur_pct is not None else "—")
         if pos_data:
             p9.metric("入りパーセンタイル",  f"{pos_data.get('entry_percentile',0):.1f}%tile")
             p10.metric("現在パーセンタイル", f"{pos_data.get('current_percentile',0):.1f}%tile")

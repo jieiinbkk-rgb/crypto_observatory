@@ -483,16 +483,19 @@ with tab_bt:
                 {"entry": 10, "exit": 40, "label": "10/40", "tp_min_pnl": None},
             ]
 
-            _bt_ai_model = None
-            import pickle as _pkl_mod
-            with st.expander('AIフィルター設定'):
-                if st.checkbox('AIフィルターを有効化', value=False, key='ai_bt'):
-                    _f = st.file_uploader('pmr_filter.pkl', type=['pkl'], key='ai_pkl')
+            _bt_ai_model = _auto_load_ai_model()
+            with st.expander('AIフィルター設定', expanded=False):
+                if _bt_ai_model is not None:
+                    st.success(f'✅ AIモデル自動読込済 閾値={_bt_ai_model["threshold"]:.2f}')
+                    if st.checkbox('AIフィルターを無効化', value=False, key='ai_bt_off'):
+                        _bt_ai_model = None
+                else:
+                    st.warning('AIモデル未取得')
+                    import pickle as _pkl_mod
+                    _f = st.file_uploader('手動: pmr_filter.pkl', type=['pkl'], key='ai_pkl')
                     if _f:
-                        _bt_ai_model = _pkl_mod.load(_f)
-                        st.success(f'AIモデル読込済 閾値={_bt_ai_model["threshold"]:.2f}')
-                    else:
-                        st.caption('VMからpmr_filter.pklをダウンロードしてアップロード')
+                        _bt_ai_model = _pkl_mod.loads(_f.read())
+                        st.success(f'読込済 閾値={_bt_ai_model["threshold"]:.2f}')
             results = []
             for cfg in configs:
                 r = run_pmr_backtest(

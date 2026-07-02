@@ -325,7 +325,7 @@ with tab_bt:
         except Exception as e:
             return None
 
-    def run_pmr_backtest(df, entry_pct, exit_pct, stop_loss_pct, stop_prem_delta, timeout_bars, capital=30000, tp_min_pnl=None):
+    def run_pmr_backtest(df, entry_pct, exit_pct, stop_loss_pct, stop_prem_delta, timeout_bars, capital=30000, tp_min_pnl=None, ai_model=None):
         """PMRロジックをヒストリカルデータでシミュレーション"""
         prems = df["BTC_IV"].values
         prices = df["BTC_Spot"].values
@@ -334,6 +334,8 @@ with tab_bt:
 
         trades = []
         position = None
+        low_dur = 0
+        pcts_hist = []
 
         for i in range(min_samples, n):
             hist = prems[max(0, i-500):i]
@@ -343,9 +345,38 @@ with tab_bt:
             if cur_price <= 100_000 or np.isnan(cur_price) or np.isnan(cur_prem):
                 continue
             pct = float((hist < cur_prem).mean() * 100)
+            pcts_hist.append(pct)
+            low_dur = low_dur + 1 if pct < entry_pct else 0
 
             if position is None:
                 if pct <= entry_pct:
+                    if ai_model is not None:
+                        try:
+                            def _r(n): return (prices[i]-prices[i-n])/prices[i-n] if i>=n and prices[i-n]>0 else 0.0
+                            _ps = prems[max(0,i-30):i+1]
+                            _pr30 = prices[max(0,i-30):i+1]
+                            _pr60 = prices[max(0,i-60):i+1]
+                            import numpy as _np2
+                            _v30 = float(_np2.std(_np2.diff(_pr30)/_pr30[:-1]))*100 if len(_pr30)>2 else 0.0
+                            _v60 = float(_np2.std(_np2.diff(_pr60)/_pr60[:-1]))*100 if len(_pr60)>2 else 0.0
+                            _ph = pcts_hist[:]
+                            _psl10 = (_ph[-1]-_ph[-11]) if len(_ph)>=11 else 0.0
+                            _psl30 = (_ph[-1]-_ph[-31]) if len(_ph)>=31 else 0.0
+                            _pmn30 = min(_ph[-30:]) if len(_ph)>=30 else pct
+                            try:
+                                _ts = df['Timestamp'].iloc[i] if 'Timestamp' in df.columns else None
+                                _hr = float(_ts.hour) if _ts is not None else 0.0
+                                _iw = float(int(_ts.weekday()>=5)) if _ts is not None else 0.0
+                            except Exception:
+                                _hr = 0.0; _iw = 0.0
+                            _feat = [pct,_r(10),_r(30),_r(60),_r(120),_v30,_v60,cur_prem,
+                                np.mean(_ps),np.std(_ps),cur_prem-prems[i-10],cur_prem-prems[i-30],
+                                _psl10,_psl30,_pmn30,_hr,_iw,float(low_dur)]
+                            _p2 = ai_model["model"].predict_proba([_feat])[0][1]
+                            if _p2 < ai_model["threshold"]:
+                                continue
+                        except Exception:
+                            pass
                     position = {
                         "entry_idx": i, "entry_price": cur_price,
                         "entry_prem": cur_prem, "entry_pct": round(pct, 1),
@@ -375,6 +406,8 @@ with tab_bt:
                         "勝ち": pnl > 0,
                     })
                     position = None
+        low_dur = 0
+        pcts_hist = []
 
         if not trades:
             return None
@@ -418,12 +451,22 @@ with tab_bt:
                 {"entry": 10, "exit": 40, "label": "10/40", "tp_min_pnl": None},
             ]
 
+            _bt_ai_model = None
+            import pickle as _pkl_mod
+            with st.expander('AIフィルター設定'):
+                if st.checkbox('AIフィルターを有効化', value=False, key='ai_bt'):
+                    _f = st.file_uploader('pmr_filter.pkl', type=['pkl'], key='ai_pkl')
+                    if _f:
+                        _bt_ai_model = _pkl_mod.load(_f)
+                        st.success(f'AIモデル読込済 閾値={_bt_ai_model["threshold"]:.2f}')
+                    else:
+                        st.caption('VMからpmr_filter.pklをダウンロードしてアップロード')
             results = []
             for cfg in configs:
                 r = run_pmr_backtest(
                     df_iv, cfg["entry"], cfg["exit"],
                     stop_loss_pct=-0.015, stop_prem_delta=-0.15, timeout_bars=240,
-                    tp_min_pnl=cfg.get("tp_min_pnl")
+                    tp_min_pnl=cfg.get("tp_min_pnl"), ai_model=_bt_ai_model
                 )
                 if r:
                     results.append({
@@ -455,7 +498,7 @@ with tab_bt:
                 best_r = run_pmr_backtest(
                     df_iv, best_cfg["entry"], best_cfg["exit"],
                     stop_loss_pct=-0.015, stop_prem_delta=-0.15, timeout_bars=240,
-                    tp_min_pnl=cfg.get("tp_min_pnl")
+                    tp_min_pnl=cfg.get("tp_min_pnl"), ai_model=_bt_ai_model
                 )
                 if best_r:
                     st.markdown(f"#### 最良設定「{df_res.iloc[0]['設定']}」のP&L推移")

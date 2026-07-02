@@ -4,6 +4,38 @@
 ╚══════════════════════════════════════════════════════════════════╝
 """
 import streamlit as st
+
+import base64 as _b64
+import pickle as _pkl_mod
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _auto_load_ai_model():
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials as _Creds
+        _scopes = ["https://spreadsheets.google.com/feeds",
+                   "https://www.googleapis.com/auth/drive"]
+        _si = dict(st.secrets.get("gcp_service_account", {}))
+        if not _si:
+            _si = {k: st.secrets[k] for k in
+                   ["type","project_id","private_key_id","private_key",
+                    "client_email","client_id","token_uri"]
+                   if k in st.secrets}
+        if not _si:
+            return None
+        _creds = _Creds.from_service_account_info(_si, scopes=_scopes)
+        _gc = gspread.authorize(_creds)
+        _sh = _gc.open_by_key(st.secrets["SHEET_ID"])
+        _ws = _sh.worksheet("pmr_model")
+        _chunks = _ws.col_values(1)
+        if not _chunks:
+            return None
+        import base64, pickle
+        _data = base64.b64decode("".join(_chunks))
+        return pickle.loads(_data)
+    except Exception:
+        return None
+
 import pandas as pd
 import plotly.graph_objects as go
 import json
